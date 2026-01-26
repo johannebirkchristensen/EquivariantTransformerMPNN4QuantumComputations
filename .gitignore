@@ -208,3 +208,5 @@ __marimo__/
 
 
 env/master_env/
+datasets/QM9/qm9_data
+datasets/QM9/qm9.db
