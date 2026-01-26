@@ -34,7 +34,27 @@ from ase.db import connect
 
 # Create ASE database from QM9
 # Assuming you have qm9.db file
-dataset = AseReadDataset(config={
-    'src': '/work3/s203788/Master_Project_2026/EquivariantTransformerMPNN4QuantumComputations/datasets/QM9/qm9.db',  # or qm9.xyz file
-    'target': 'energy',  # or whatever property you want
+#dataset = AseReadDataset(config={
+ #   'src': '/work3/s203788/Master_Project_2026/EquivariantTransformerMPNN4QuantumComputations/datasets/QM9/qm9.db',  # or qm9.xyz file
+ #   'target': 'U0',  # or whatever property you want
+#})
+
+
+
+
+
+
+print("Loading QM9 dataset from ASE database...")
+
+from fairchem.core.datasets import AseDBDataset
+
+dataset = AseDBDataset(config={
+    'src': '/work3/s203788/Master_Project_2026/EquivariantTransformerMPNN4QuantumComputations/datasets/QM9/qm9_small_1000.db',
+    'target': 'U0',
 })
+
+print(f"Loaded {len(dataset)} samples of QM9 dataset from ASE database")
+
+# Access just one sample to test
+print("First sample:")
+print(dataset[0])
