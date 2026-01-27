@@ -376,6 +376,13 @@ class SO3_Embedding():
             self.mmax_list[i] = int(self.lmax_list[i])
         self.set_lmax_mmax(self.lmax_list, self.mmax_list)
 
+    #SH coefficients
+    #↓ (project to sphere)
+    #values on spherical grid
+    #↓  (apply nonlinearity pointwise)
+    #activated grid values
+    #   ↓  (project back)
+    #SH coefficients (equivariant!)
 
     # Compute point-wise spherical non-linearity
     def _grid_act(self, SO3_grid, act, mappingReduced):
@@ -402,6 +409,14 @@ class SO3_Embedding():
 
 
     # Compute a sample of the grid
+    #before to_grid
+    #Node embedding:
+    # SH coefficients (frequency domain)
+    
+    #after to_grid
+    # Node embedding:
+    # values on spherical grid (real space)
+
     def to_grid(self, SO3_grid, lmax=-1):
         if lmax == -1:
             lmax = max(self.lmax_list)
@@ -426,6 +441,7 @@ class SO3_Embedding():
 
 
     # Compute irreps from grid representation
+    #It converts a spherical grid signal back into spherical harmonic (SO(3) irreps) coefficients.
     def _from_grid(self, x_grid, SO3_grid, lmax=-1):
         if lmax == -1:
             lmax = max(self.lmax_list)
@@ -452,7 +468,7 @@ class SO3_Embedding():
             offset = offset + num_coefficients
             offset_channel = offset_channel + self.num_channels
 
-
+#What it does: Computes and stores Wigner-D matrices for rotating spherical harmonics
 class SO3_Rotation(torch.nn.Module):
     """
     Helper functions for Wigner-D rotations
@@ -518,7 +534,11 @@ class SO3_Rotation(torch.nn.Module):
 
         return wigner.detach()
 
-
+#What it does: Converts between spherical harmonics ↔ grid points on S²
+## In SO3_Embedding._grid_act():
+#x_grid = to_grid_mat @ x_coefficients    # Y_lm → f(θ,φ)
+#x_grid = activation(x_grid)               # Apply SiLU/GELU/etc
+#x_coefficients = from_grid_mat @ x_grid   # f(θ,φ) → Y_lm
 class SO3_Grid(torch.nn.Module):
     """
     Helper functions for grid representation of the irreps
@@ -615,7 +635,7 @@ class SO3_Grid(torch.nn.Module):
         embedding = torch.einsum("bai, zbac -> zic", from_grid_mat, grid)
         return embedding
 
-
+# is not used and can probabily be removed
 class SO3_Linear(torch.nn.Module):
     def __init__(self, in_features, out_features, lmax, bias=True):
         super().__init__()
@@ -659,7 +679,12 @@ class SO3_Linear(torch.nn.Module):
     def __repr__(self):
         return f"{self.__class__.__name__}(in_features={self.in_features}, out_features={self.out_features}, lmax={self.lmax})"
 
-    
+#What it does: Linear layer that respects SO(3) structure
+#Regular linear layer: out = W @ in + b
+#SO3 linear layer:
+
+#Separate weights for each l
+#Only l=0 gets bias (higher l's transform non-trivially, can't have constant bias)
 class SO3_LinearV2(torch.nn.Module):
     def __init__(self, in_features, out_features, lmax, bias=True):
         '''
