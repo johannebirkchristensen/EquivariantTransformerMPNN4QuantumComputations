@@ -31,11 +31,18 @@ from torch.nn import Linear
 # m = -l, -l+1, ..., 0, ..., l-1, l
 # The class provides methods to get indices of coefficients corresponding to specific l and m values
 #Example usage:
-# for lmax = 2
+# for lmax = 2, mmax = 1
 # l: 0  -> m: 0
 # l: 1  -> m: -1, 0, 1
 # l: 2  -> m: -2, -1, 0, 1, 2
 # So a total of 1 + 3 + 5 = 9 coefficients for lmax = 2, stored as a 1D array of length 9.
+# But since mmax = 1, we only keep m = -1, 0, 1 for l = 2
+# SO the kept coefficients are:
+# l=0: m=0
+# l=1: m=-1, 0, 1
+# l=2: m=-1, 0, 1
+
+
 class CoefficientMappingModule(torch.nn.Module):
     """
     Helper module for coefficients used to reshape l <--> m and to get coefficients of specific degree or order
@@ -192,7 +199,8 @@ class CoefficientMappingModule(torch.nn.Module):
     def __repr__(self):
         return f"{self.__class__.__name__}(lmax_list={self.lmax_list}, mmax_list={self.mmax_list})"
 
-
+#What it does: THE core data structure. Stores node features in spherical harmonic basis.
+#Shape of the output is [num_nodes, num_coefficients, num_channels]
 class SO3_Embedding():
     """
     Helper functions for performing operations on irreps embedding
@@ -224,7 +232,9 @@ class SO3_Embedding():
             self.num_coefficients = self.num_coefficients + int(
                 (lmax_list[i] + 1) ** 2
             )
-
+        #Now initialize the embedding tensor
+        # Where the dimensions is [length, num_coefficients, num_channels].. 
+        #length is batch size (num nodes or num edges)
         embedding = torch.zeros(
             length,
             self.num_coefficients,
@@ -263,12 +273,17 @@ class SO3_Embedding():
 
 
     # Expand the node embeddings to the number of edges
+    # self.embedding[edge_index] contains the embeddings of the neighbors
     def _expand_edge(self, edge_index):
-        embedding = self.embedding[edge_index]
+        embedding = self.embedding[edge_index] # edge_embedding[i] = node_embedding[edge_index[i]] is what it means
         self.set_embedding(embedding)
 
 
     # Initialize an embedding of irreps of a neighborhood
+    #expand_edge turns node embeddings into edge (message) embeddings by copying the
+    # embeddings of neighboring nodes into a new SO3_Embedding object.
+    # So after this function, we have edge embeddings ready to be used in message passing
+    # so each edge now has the embedding of the source node
     def expand_edge(self, edge_index):
         x_expand = SO3_Embedding(
             0,
@@ -282,6 +297,11 @@ class SO3_Embedding():
 
 
     # Compute the sum of the embeddings of the neighborhood
+    # Here, edge_index tells you which node each edge should contribute to.
+    #
+    # Conceptually, this is the “target node” for each edge.
+    #
+    # index_add_ sums all edges pointing to the same target node.
     def _reduce_edge(self, edge_index, num_nodes):
         new_embedding = torch.zeros(
             num_nodes,
@@ -290,6 +310,11 @@ class SO3_Embedding():
             device=self.embedding.device,
             dtype=self.embedding.dtype,
         )
+        #tensor.index_add_(dim, index, source)
+        #For each i, add source[i] to tensor[index[i]] along dimension dim.
+        # we add the edges' embeddings to the corresponding nodes in the node 
+        # dimension of the new_embedding tensor
+        # and by edges we just mean all the nodes embeddings that are connected to the node 
         new_embedding.index_add_(0, edge_index, self.embedding)
         self.set_embedding(new_embedding)
 
@@ -304,7 +329,7 @@ class SO3_Embedding():
         self.embedding = torch.einsum("nac, ab -> nbc", self.embedding, mapping.to_m)
 
 
-    # Rotate the embedding
+    # Rotate the embedding using the 
     def _rotate(self, SO3_rotation, lmax_list, mmax_list):
         
         if self.num_resolutions == 1:
@@ -326,6 +351,9 @@ class SO3_Embedding():
 
 
     # Rotate the embedding by the inverse of the rotation matrix
+    #Goal: “undo” a rotation or rotate back to the original frame.
+    # UUUUH: This combination of _rotate_inv and _rotate
+    # Is probabiliy used in the SO(2) projection !!!! 
     def _rotate_inv(self, SO3_rotation, mappingReduced):
 
         if self.num_resolutions == 1:
