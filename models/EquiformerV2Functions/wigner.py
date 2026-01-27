@@ -5,6 +5,7 @@ import torch
 # Borrowed from e3nn @ 0.4.0:
 # https://github.com/e3nn/e3nn/blob/0.4.0/e3nn/o3/_wigner.py#L10
 # _Jd is a list of tensors of shape (2l+1, 2l+1)
+# it is precomputed to speed up the calculation of Wigner-D matrices
 _Jd = torch.load(os.path.join(os.path.dirname(__file__), "Jd.pt"))
 
 
