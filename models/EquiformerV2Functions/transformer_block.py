@@ -264,6 +264,7 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
         x_message.set_lmax_mmax(self.lmax_list.copy(), self.mmax_list.copy())
 
         # radial function (scale all m components within a type-L vector of one channel with the same weight)
+        #Scale the message based on the distane between the atoms
         if self.use_m_share_rad:
             x_edge_weight = self.rad_func(x_edge)
             x_edge_weight = x_edge_weight.reshape(-1, (max(self.lmax_list) + 1), 2 * self.sphere_channels)
@@ -297,6 +298,7 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
             ##x_message._grid_act(self.SO3_grid, self.value_act, self.mappingReduced)
 
         # Second SO(2)-convolution
+        
         if self.use_s2_act_attn:
             x_message, x_0_extra = self.so2_conv_2(x_message, x_edge)
         else:
@@ -450,7 +452,7 @@ class FeedForwardNetwork(torch.nn.Module):
 
         return input_embedding       
 
-
+#TransBlockV2=Norm1​→SO2Attention→Residual→Norm2​→FFN→Residual
 class TransBlockV2(torch.nn.Module):
     """
 
