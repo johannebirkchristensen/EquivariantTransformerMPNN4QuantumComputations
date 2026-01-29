@@ -18,7 +18,7 @@ config = {
     'lmax_list': [4],  # Lower than OC20's [6], sufficient for small molecules
     'mmax_list': [2],  # Order truncation
     
-    'num_targets': 12,  # QM9 has 12 properties
+    'num_targets': 1,  # QM9 has 12 properties
 
     'batch_size': 16,
     'learning_rate': 1e-3,

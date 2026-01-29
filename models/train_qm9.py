@@ -9,35 +9,37 @@ Training script for EquiformerV2_QM9 (QM9 dataset)
 - Assumes data loader produces batch dict with keys:
     atomic_numbers, pos, batch, natoms, targets
 """
+
 import sys
 import os
 sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # Adds project root
 
-
-
 # =======================
 # IMPORTS
 # =======================
-import os
+from tqdm import tqdm
 import yaml
+import json
+import csv
 from datetime import datetime
 import torch
 torch.serialization.add_safe_globals([slice])
 import torch.nn as nn
 from torch.optim import Adam
-from configs.QM9.config import config  # your YAML or Python config
+from configs.QM9.config import config
 from data_loader_qm9 import get_qm9_loaders
-from equiformerv2_qm9 import EquiformerV2_QM9  # your model
+from equiformerv2_qm9 import EquiformerV2_QM9
 
 # =======================
 # DEVICE
 # =======================
 DEVICE = 'cuda' if torch.cuda.is_available() else 'cpu'
+print(f"Using device: {DEVICE}")
 
 # =======================
-# LOAD HYPERPARAMETERS FROM CONFIG
+# LOAD HYPERPARAMETERS
 # =======================
-DB_PATH = config.get('db_path', 'qm9.db')  # path to QM9 ASE database
+DB_PATH = config.get('db_path', 'qm9.db')
 BATCH_SIZE = config.get('batch_size', 16)
 LR = config.get('learning_rate', 1e-3)
 EPOCHS = config.get('epochs', 50)
@@ -45,23 +47,24 @@ EPOCHS = config.get('epochs', 50)
 # =======================
 # LOAD DATA
 # =======================
-# Returns PyTorch DataLoader objects for training, validation, testing
 train_loader, val_loader, test_loader = get_qm9_loaders(DB_PATH, batch_size=BATCH_SIZE)
+print(f"Train samples: {len(train_loader.dataset)}, Val samples: {len(val_loader.dataset)}, Test samples: {len(test_loader.dataset)}")
 
 # =======================
-# INITIALIZE MODEL, LOSS, OPTIMIZER
+# INITIALIZE MODEL
 # =======================
-# Unpack config directly into the model constructor
-model_args = {k: config[k] for k in ['num_layers', 'sphere_channels', 'attn_hidden_channels', 'num_heads', 'attn_alpha_channels', 'attn_value_channels', 'ffn_hidden_channels', 'lmax_list', 'mmax_list', 'num_targets']}
+model_args = {k: config[k] for k in [
+    'num_layers', 'sphere_channels', 'attn_hidden_channels',
+    'num_heads', 'attn_alpha_channels', 'attn_value_channels',
+    'ffn_hidden_channels', 'lmax_list', 'mmax_list', 'num_targets'
+]}
+
 model = EquiformerV2_QM9(**model_args).to(DEVICE)
+print("Model details:", model)
 
-# Mean squared error loss for QM9 targets
 criterion = nn.MSELoss()
-
-# Adam optimizer
 optimizer = Adam(model.parameters(), lr=LR)
 
-# Optional learning rate scheduler (reduce LR on plateau)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
     optimizer, factor=0.5, patience=5
 )
@@ -69,26 +72,35 @@ scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
 # =======================
 # TRAINING LOOP
 # =======================
+train_losses = []
+val_losses = []
+
+run_start_time = datetime.now()
+
 for epoch in range(1, EPOCHS + 1):
     model.train()
     train_loss = 0.0
+    num_samples = 0
 
-    for batch in train_loader:
-        # Move all batch tensors to device
+    pbar = tqdm(train_loader, desc=f"Epoch {epoch}/{EPOCHS} [Train]")
+
+    for batch in pbar:
         for k in batch:
             batch[k] = batch[k].to(DEVICE)
 
         optimizer.zero_grad()
-        outputs = model(batch)  # Shape: [batch_size, 12]
-
+        outputs = model(batch)
         loss = criterion(outputs, batch['targets'])
         loss.backward()
         optimizer.step()
 
-        # Multiply by batch size to get sum for averaging later
-        train_loss += loss.item() * len(batch['targets'])
+        bs = len(batch['targets'])
+        train_loss += loss.item() * bs
+        num_samples += bs
 
-    # Average over dataset
+        avg_loss = train_loss / num_samples
+        pbar.set_postfix({"loss": f"{loss.item():.4f}", "avg": f"{avg_loss:.4f}"})
+
     train_loss /= len(train_loader.dataset)
 
     # =======================
@@ -106,8 +118,10 @@ for epoch in range(1, EPOCHS + 1):
 
     val_loss /= len(val_loader.dataset)
 
-    # Scheduler step (ReduceLROnPlateau requires metric)
     scheduler.step(val_loss)
+
+    train_losses.append(train_loss)
+    val_losses.append(val_loss)
 
     print(f"Epoch {epoch:03d} | Train Loss: {train_loss:.6f} | Val Loss: {val_loss:.6f}")
 
@@ -127,50 +141,61 @@ with torch.no_grad():
 test_loss /= len(test_loader.dataset)
 print(f"Test Loss: {test_loss:.6f}")
 
-
-
 # =======================
-# SAVE MODEL & CONFIG
+# CREATE SAVE FOLDER (ONLY NOW)
 # =======================
+run_end_time = datetime.now()
+run_name = run_end_time.strftime("run_%Y%m%d_%H%M%S")
 
-
-# Folder path: create a unique folder for this training run
-timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-save_dir = os.path.join("trained_models", "QM9", f"run_{timestamp}")
+save_dir = os.path.join("trained_models", "QM9", run_name)
 os.makedirs(save_dir, exist_ok=True)
 
-# --- Save model state dict ---
+print(f"Saving run to: {save_dir}")
+
+# =======================
+# SAVE MODEL
+# =======================
 model_path = os.path.join(save_dir, "equiformer_v2_qm9.pt")
 torch.save(model.state_dict(), model_path)
-print(f"Trained model saved at: {model_path}")
 
-# --- Add performance to config ---
+# =======================
+# SAVE CONFIG
+# =======================
 config_to_save = config.copy()
-config_to_save['final_train_loss'] = train_loss
-config_to_save['final_val_loss'] = val_loss
-config_to_save['final_test_loss'] = test_loss
+config_to_save['final_train_loss'] = float(train_losses[-1])
+config_to_save['final_val_loss'] = float(val_losses[-1])
+config_to_save['final_test_loss'] = float(test_loss)
+config_to_save['run_start_time'] = run_start_time.isoformat()
+config_to_save['run_end_time'] = run_end_time.isoformat()
 
-# --- Save config as YAML ---
 config_path = os.path.join(save_dir, "config.yaml")
 with open(config_path, "w") as f:
     yaml.dump(config_to_save, f)
-print(f"Config saved at: {config_path}")
 
+# =======================
+# SAVE LOSSES (JSON)
+# =======================
+loss_log = {
+    "train_losses": train_losses,
+    "val_losses": val_losses,
+    "test_loss": test_loss
+}
 
-"""
-Reload the model by 
----------------------------------------------------
-import yaml
-import torch
-from equiformer_v2_qm9 import EquiformerV2_QM9
+with open(os.path.join(save_dir, "losses.json"), "w") as f:
+    json.dump(loss_log, f, indent=2)
 
-# Load saved config
-with open("trained_models/QM9/run_20260129_123456/config.yaml") as f:
-    cfg = yaml.safe_load(f)
+# =======================
+# SAVE LOSSES (CSV)
+# =======================
+with open(os.path.join(save_dir, "losses.csv"), "w", newline="") as f:
+    writer = csv.writer(f)
+    writer.writerow(["epoch", "train_loss", "val_loss"])
+    for i, (tr, va) in enumerate(zip(train_losses, val_losses), 1):
+        writer.writerow([i, tr, va])
 
-model = EquiformerV2_QM9(**cfg)
-model.load_state_dict(torch.load("trained_models/QM9/run_20260129_123456/equiformer_v2_qm9.pt"))
-model.to('cuda' if torch.cuda.is_available() else 'cpu')
-model.eval()
-
-"""
+print("====================================")
+print("Training complete.")
+print(f"Model saved to:  {model_path}")
+print(f"Config saved to: {config_path}")
+print(f"Losses saved to: {save_dir}")
+print("====================================")

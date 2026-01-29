@@ -45,18 +45,18 @@ class QM9Dataset(Dataset):
 
         # QM9 targets: μ, α, ε_HOMO, ε_LUMO, Δε, ⟨R²⟩, ZPVE, U₀, U, H, G, c_v
         targets = torch.tensor([
-            row.data['mu'],
-            row.data['alpha'],
-            row.data['homo'],
-            row.data['lumo'],
-            row.data['gap'],
-            row.data['r2'],
-            row.data['zpve'],
-            row.data['U0'],
-            row.data['U'],
-            row.data['H'],
-            row.data['G'],
-            row.data['Cv']
+            #row.data['mu'],
+            #row.data['alpha'],
+            #row.data['homo'],
+            #row.data['lumo'],
+            #row.data['gap'],
+            #row.data['r2'],
+            #row.data['zpve'],
+            #row.data['U0'],
+            row.data['U']
+            #row.data['H'],
+            #row.data['G'],
+            #row.data['Cv']
         ], dtype=torch.float32)
 
         sample = {

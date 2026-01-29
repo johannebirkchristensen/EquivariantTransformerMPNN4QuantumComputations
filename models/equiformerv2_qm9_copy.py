@@ -3,28 +3,35 @@ EquiformerV2 adapted for QM9 Dataset
 
 CHANGES FROM ORIGINAL (equiformer_v2_oc20.py):
 ====================================================
-- Changed: num_targets (1 for OC20 → 12 for QM9)
-    Reason: QM9 has 12 properties to predict
 
-- use_pbc: True → False
-    Reason: QM9 molecules are isolated (no periodic boundaries)
+1. CLASS NAME: EquiformerV2_OC20 → EquiformerV2_QM9
+   Reason: Clarity - this is the QM9 version
+
+2. __init__ PARAMETERS:
+   - Removed: num_atoms, bond_feat_dim (not used in either version)
+   - Changed: num_targets (1 for OC20 → 12 for QM9)
+   Reason: QM9 has 12 properties to predict
+
+3. DEFAULT HYPERPARAMETERS (in __init__):
+   - use_pbc: True → False
+     Reason: QM9 molecules are isolated (no periodic boundaries)
    
-- regress_forces: True → False
-    Reason: QM9 doesn't have force labels, only molecular properties
+   - regress_forces: True → False
+     Reason: QM9 doesn't have force labels, only molecular properties
    
-- max_neighbors: 500 → 50
-    Reason: QM9 molecules ~18 atoms, fewer neighbors than OC20 crystals
+   - max_neighbors: 500 → 50
+     Reason: QM9 molecules ~18 atoms, fewer neighbors than OC20 crystals
    
-- max_num_elements: 90 → 10
+   - max_num_elements: 90 → 10
      Reason: QM9 only has H, C, N, O, F (atomic numbers 1, 6, 7, 8, 9)
    
-- num_layers: 12 → 8
+   - num_layers: 12 → 8
      Reason: QM9 is simpler, fewer layers needed (faster, less overfitting)
    
-- lmax_list: [6] → [4]
+   - lmax_list: [6] → [4]
      Reason: Small molecules need less angular resolution
    
-- _AVG_NUM_NODES: 77.81 → 18.0 (approximate)
+   - _AVG_NUM_NODES: 77.81 → 18.0 (approximate)
      Reason: QM9 molecules average ~18 atoms vs OC20 ~78 atoms
    
    - _AVG_DEGREE: 23.4 → 6.0 (approximate, will compute from data)
@@ -46,15 +53,19 @@ All other components (SO3, attention, FFN, etc.) remain IDENTICAL.
 This shows the generality of the EquiformerV2 architecture!
 """
 
+
+# IMPORTS - Minimal dependencies, no OCP base model needed
 import math
 import torch
 import torch.nn as nn
 
-# Updated import paths for fairchem (you mentioned using fairchem.core)
-from fairchem.core.common.registry import registry
-from fairchem.core.common.utils import conditional_grad
-from fairchem.core.models.base import BackboneInterface as BaseModel
-# These imports stay the same (internal modules)
+# Try to import e3nn (needed for Wigner-D)
+try:
+    from e3nn import o3
+except ImportError:
+    pass
+
+# Internal modules (absolute imports - all files in same directory)
 from EquiformerV2Functions.so3 import (
     CoefficientMappingModule,
     SO3_Embedding,
@@ -74,8 +85,19 @@ from EquiformerV2Functions.transformer_block import (
 from EquiformerV2Functions.input_block import EdgeDegreeEmbedding
 from EquiformerV2Functions.edge_rot_mat import init_edge_rot_mat
 
-# For distance expansion
-from fairchem.core.models.escaip.utils.smearing import GaussianSmearing
+# Distance expansion - simple implementation (no OCP dependency)
+class GaussianSmearing(nn.Module):
+    """Gaussian radial basis functions for distance encoding"""
+    def __init__(self, start=0.0, stop=5.0, num_gaussians=50, width=0.5):
+        super().__init__()
+        self.num_output = num_gaussians
+        offset = torch.linspace(start, stop, num_gaussians)
+        self.coeff = -0.5 / (width ** 2)
+        self.register_buffer('offset', offset)
+    
+    def forward(self, dist):
+        dist = dist.unsqueeze(-1) - self.offset
+        return torch.exp(self.coeff * torch.pow(dist, 2))
 
 try:
     from e3nn import o3
@@ -90,11 +112,10 @@ _AVG_NUM_NODES_QM9 = 18.0  # Approximate, QM9 molecules have ~18 atoms on averag
 _AVG_DEGREE_QM9 = 6.0      # Approximate, will be computed from actual data
 
 
-# CHANGE 2: Class name for clarity
-# Original: EquiformerV2_OC20
-# QM9: EquiformerV2_QM9
-@registry.register_model("equiformer_v2_qm9")
-class EquiformerV2_QM9(BaseModel, nn.Module): # we let also it inherit from nn.Module
+# CHANGE 2: Standalone class (no registry, no OCP base model)
+# Original: EquiformerV2_OC20(BaseModel)
+# QM9: EquiformerV2_QM9(nn.Module) - pure PyTorch
+class EquiformerV2_QM9(nn.Module):
     """
     EquiformerV2 adapted for QM9 molecular property prediction
     
@@ -184,7 +205,6 @@ class EquiformerV2_QM9(BaseModel, nn.Module): # we let also it inherit from nn.M
         weight_init='normal'     # Same
     ):
         super().__init__()
-        
         
         # Store all config (same as original)
         self.num_targets = num_targets
@@ -417,9 +437,10 @@ class EquiformerV2_QM9(BaseModel, nn.Module): # we let also it inherit from nn.M
         # Reason: QM9 doesn't have force labels
         
         # Weight initialization (same as original)
-        
         self.apply(self._init_weights)
         self.apply(self._uniform_init_rad_func_linear_weights)
+    
+    
     def generate_graph(self, data):
         """
         Generate edge_index and edge features from atomic positions
@@ -523,7 +544,8 @@ class EquiformerV2_QM9(BaseModel, nn.Module): # we let also it inherit from nn.M
             None,  # Placeholder
             neighbors
         )
-    @conditional_grad(torch.enable_grad())
+    
+    
     def forward(self, data):
         """
         Forward pass for QM9 molecules
@@ -677,7 +699,7 @@ class EquiformerV2_QM9(BaseModel, nn.Module): # we let also it inherit from nn.M
             # Sum contributions over atoms in each molecule
             # This gives graph-level prediction
             property_pred = torch.zeros(
-                len(data['natoms']), 
+                len(data['natoms']),  # Number of molecules in batch
                 device=self.device, 
                 dtype=self.dtype
             )
