@@ -52,11 +52,11 @@ class QM9Dataset(Dataset):
             row.data['gap'],
             row.data['r2'],
             row.data['zpve'],
-            row.data['u0'],
-            row.data['u'],
-            row.data['h'],
-            row.data['g'],
-            row.data['cv']
+            row.data['U0'],
+            row.data['U'],
+            row.data['H'],
+            row.data['G'],
+            row.data['Cv']
         ], dtype=torch.float32)
 
         sample = {

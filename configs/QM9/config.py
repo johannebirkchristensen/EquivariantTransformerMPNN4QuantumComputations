@@ -23,6 +23,7 @@ config = {
     'batch_size': 16,
     'learning_rate': 1e-3,
     'epochs': 50,
-    'db_path': "qm9.db"
+    'db_path': "/work3/s203788/Master_Project_2026/EquivariantTransformerMPNN4QuantumComputations/datasets/QM9/qm9.db"
 
 }
+

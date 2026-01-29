@@ -9,6 +9,11 @@ Training script for EquiformerV2_QM9 (QM9 dataset)
 - Assumes data loader produces batch dict with keys:
     atomic_numbers, pos, batch, natoms, targets
 """
+import sys
+import os
+sys.path.append(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))  # Adds project root
+
+
 
 # =======================
 # IMPORTS
@@ -17,11 +22,12 @@ import os
 import yaml
 from datetime import datetime
 import torch
+torch.serialization.add_safe_globals([slice])
 import torch.nn as nn
 from torch.optim import Adam
-from configs.QM9 import config  # your YAML or Python config
+from configs.QM9.config import config  # your YAML or Python config
 from data_loader_qm9 import get_qm9_loaders
-from equiformer_v2_qm9 import EquiformerV2_QM9  # your model
+from equiformerv2_qm9 import EquiformerV2_QM9  # your model
 
 # =======================
 # DEVICE
@@ -46,7 +52,8 @@ train_loader, val_loader, test_loader = get_qm9_loaders(DB_PATH, batch_size=BATC
 # INITIALIZE MODEL, LOSS, OPTIMIZER
 # =======================
 # Unpack config directly into the model constructor
-model = EquiformerV2_QM9(**config).to(DEVICE)
+model_args = {k: config[k] for k in ['num_layers', 'sphere_channels', 'attn_hidden_channels', 'num_heads', 'attn_alpha_channels', 'attn_value_channels', 'ffn_hidden_channels', 'lmax_list', 'mmax_list', 'num_targets']}
+model = EquiformerV2_QM9(**model_args).to(DEVICE)
 
 # Mean squared error loss for QM9 targets
 criterion = nn.MSELoss()
@@ -56,7 +63,7 @@ optimizer = Adam(model.parameters(), lr=LR)
 
 # Optional learning rate scheduler (reduce LR on plateau)
 scheduler = torch.optim.lr_scheduler.ReduceLROnPlateau(
-    optimizer, factor=0.5, patience=5, verbose=True
+    optimizer, factor=0.5, patience=5
 )
 
 # =======================

@@ -95,7 +95,7 @@ _AVG_DEGREE_QM9 = 6.0      # Approximate, will be computed from actual data
 # Original: EquiformerV2_OC20
 # QM9: EquiformerV2_QM9
 @registry.register_model("equiformer_v2_qm9")
-class EquiformerV2_QM9(BaseModel):
+class EquiformerV2_QM9(BaseModel, nn.Module): # we let also it inherit from nn.Module
     """
     EquiformerV2 adapted for QM9 molecular property prediction
     
@@ -185,6 +185,7 @@ class EquiformerV2_QM9(BaseModel):
         weight_init='normal'     # Same
     ):
         super().__init__()
+        
         
         # Store all config (same as original)
         self.num_targets = num_targets
@@ -417,9 +418,9 @@ class EquiformerV2_QM9(BaseModel):
         # Reason: QM9 doesn't have force labels
         
         # Weight initialization (same as original)
+        
         self.apply(self._init_weights)
         self.apply(self._uniform_init_rad_func_linear_weights)
-    
     
     @conditional_grad(torch.enable_grad())
     def forward(self, data):
@@ -443,13 +444,13 @@ class EquiformerV2_QM9(BaseModel):
             predictions: [batch_size, 12] predicted molecular properties
         """
         
-        self.batch_size = len(data.natoms)
-        self.dtype = data.pos.dtype
-        self.device = data.pos.device
+        self.batch_size = len(data['natoms'])
+        self.dtype = data['pos'].dtype
+        self.device = data['pos'].device
         
-        atomic_numbers = data.atomic_numbers.long()
+        atomic_numbers = data['atomic_numbers'].long()
         num_atoms = len(atomic_numbers)
-        pos = data.pos
+        pos = data['pos']
         
         # ================================================================
         # IDENTICAL TO ORIGINAL: Graph construction and initialization
@@ -528,7 +529,7 @@ class EquiformerV2_QM9(BaseModel):
                 atomic_numbers,
                 edge_distance,
                 edge_index,
-                batch=data.batch
+                batch=data['batch']
             )
         
         # Final normalization
@@ -575,11 +576,11 @@ class EquiformerV2_QM9(BaseModel):
             # Sum contributions over atoms in each molecule
             # This gives graph-level prediction
             property_pred = torch.zeros(
-                len(data.natoms), 
+                len(data['natoms']), 
                 device=self.device, 
                 dtype=self.dtype
             )
-            property_pred.index_add_(0, data.batch, node_contribution)
+            property_pred.index_add_(0, data['batch'], node_contribution)
             
             # IMPORTANT: NO division by _AVG_NUM_NODES
             # Reason: QM9 properties have their own natural scales
