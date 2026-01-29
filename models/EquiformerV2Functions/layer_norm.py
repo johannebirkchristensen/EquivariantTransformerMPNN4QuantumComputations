@@ -9,6 +9,9 @@
 import torch
 import torch.nn as nn
 
+#Standard layer norm breaks equivariance
+#Can't normalize across different l (they have different geometric meaning)
+#Can't normalize across m within same l (would break rotation properties)
 
 def get_normalization_layer(norm_type, lmax, num_channels, eps=1e-5, affine=True, normalization='component'):
     assert norm_type in ['layer_norm', 'layer_norm_sh', 'rms_norm_sh']

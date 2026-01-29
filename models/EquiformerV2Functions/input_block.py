@@ -8,6 +8,12 @@ from .radial_function import RadialFunction
 
 
 #EdgeDegreeEmbedding does exactly this: it maps atomic numbers + distances → edge embeddings in SO(3)/spherical harmonic space.
+# Example: atom A has two neighbors B and C at the same distance.
+# B is hydrogen, C is oxygen. For each edge (A,B) and (A,C), the model
+# uses the distance and atom types to generate spherical features,
+# rotates them into the correct 3D directions, and sums them to produce
+# A's initial SO(3)-equivariant embedding encoding both neighbors.
+
 class EdgeDegreeEmbedding(torch.nn.Module):
     """
 

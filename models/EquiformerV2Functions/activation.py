@@ -3,8 +3,10 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 #from .linear import Linear_gaussian_init
-
-
+#What: THE equivariant activation for SO(3) features
+#How: Grid → activate → spherical harmonics
+#Why it works: Point-wise activation on sphere preserves equivariance!
+#But yes, activation functios
 class ScaledSiLU(nn.Module):
     def __init__(self, inplace=False):
         super(ScaledSiLU, self).__init__()
