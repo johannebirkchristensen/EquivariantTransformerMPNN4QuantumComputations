@@ -19,4 +19,10 @@ config = {
     'mmax_list': [2],  # Order truncation
     
     'num_targets': 12,  # QM9 has 12 properties
+
+    'batch_size': 16,
+    'learning_rate': 1e-3,
+    'epochs': 50,
+    'db_path': "qm9.db"
+
 }
