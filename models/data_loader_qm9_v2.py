@@ -53,8 +53,21 @@ class QM9Dataset(Dataset):
         atomic_numbers = torch.tensor(atoms.numbers, dtype=torch.long)
         pos = torch.tensor(atoms.positions, dtype=torch.float32)
 
-        targets = torch.tensor([row.data['U']], dtype=torch.float32)
-
+        #targets = torch.tensor([row.data['U']], dtype=torch.float32)
+        targets = torch.tensor([
+            row.data['mu'],      # 1. Dipole moment
+            row.data['alpha'],   # 2. Polarizability
+            row.data['homo'],    # 3. HOMO energy
+            row.data['lumo'],    # 4. LUMO energy
+            row.data['gap'],     # 5. HOMO-LUMO gap
+            row.data['r2'],      # 6. Electronic spatial extent
+            row.data['zpve'],    # 7. Zero point vibrational energy
+            row.data['U0'],      # 8. Internal energy at 0K
+            row.data['U'],       # 9. Internal energy at 298K
+            row.data['H'],       # 10. Enthalpy at 298K
+            row.data['G'],       # 11. Free energy at 298K
+            row.data['Cv'],      # 12. Heat capacity at 298K
+        ], dtype=torch.float32)  # Shape: [12]
         sample = {
             'atomic_numbers': atomic_numbers,
             'pos': pos,

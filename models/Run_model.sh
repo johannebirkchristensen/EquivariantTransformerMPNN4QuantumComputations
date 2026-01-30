@@ -14,6 +14,6 @@
 
 module load python  # Load Python if needed (adjust based on your HPC system)
 source /work3/s203788/Master_Project_2026/EquivariantTransformerMPNN4QuantumComputations/env/master_env/bin/activate # Activate your virtual environment
-python modellen.py
+python train_qm9.py
 
 #python DataVisualization.py --- IGNORE ---

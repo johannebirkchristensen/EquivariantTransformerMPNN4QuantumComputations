@@ -1,0 +1,31 @@
+Using device: cuda
+GPU: NVIDIA A100-PCIE-40GB
+GPU Memory: 42.41 GB
+
+============================================================
+LOADING QM9 DATASET
+============================================================
+Train: 104665 samples
+Val:   13083 samples
+Test:  13083 samples
+Batch size: 64
+
+============================================================
+INITIALIZING MODEL
+============================================================
+Model parameters: 11,897,708
+Model size: 47.59 MB (float32)
+
+============================================================
+SETTING UP OPTIMIZER & SCHEDULER
+============================================================
+Optimizer: AdamW
+Learning rate: 0.0005
+Weight decay: 0.005
+Scheduler: Cosine with 5 epoch linear warmup
+Total epochs: 300
+Loss: L1 (MAE)
+
+============================================================
+STARTING TRAINING
+============================================================
