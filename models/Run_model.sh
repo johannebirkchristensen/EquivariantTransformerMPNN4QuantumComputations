@@ -3,8 +3,9 @@
 #BSUB -o model_run%J.out
 #BSUB -e model_run%J.err   
 #BSUB -q gpua100
-#BSUB -W 2
-#BSUB -R "rusage[mem=4GB]"
+#BSUB -W 30:00
+#BSUB -gpu "num=1:mode=exclusive_process"
+#BSUB -R "rusage[mem=8GB]"
 #BSUB -n 4
 ### -- specify that the cores must be on the same host -- 
 #BSUB -R "span[hosts=1]"
