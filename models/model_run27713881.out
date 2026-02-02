@@ -1,0 +1,63 @@
+
+------------------------------------------------------------
+Sender: LSF System <lsfadmin@hpc.dtu.dk>
+Subject: Job 27713881: <model_run> in cluster <dcc> Exited
+
+Job <model_run> was submitted from host <gbarlogin1> by user <s203788> in cluster <dcc> at Fri Jan 30 16:17:21 2026
+Job was executed on host(s) <4*n-62-12-22>, in queue <gpua100>, as user <s203788> in cluster <dcc> at Sat Jan 31 22:24:45 2026
+</zhome/45/0/155089> was used as the home directory.
+</work3/s203788/Master_Project_2026/EquivariantTransformerMPNN4QuantumComputations/models> was used as the working directory.
+Started at Sat Jan 31 22:24:45 2026
+Terminated at Sun Feb  1 22:26:52 2026
+Results reported at Sun Feb  1 22:26:52 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J model_run
+#BSUB -o model_run%J.out
+#BSUB -e model_run%J.err   
+#BSUB -q gpua100
+#BSUB -W 24:00
+#BSUB -gpu "num=1:mode=exclusive_process"
+#BSUB -R "rusage[mem=4GB]"
+#BSUB -n 4
+### -- specify that the cores must be on the same host -- 
+#BSUB -R "span[hosts=1]"
+
+
+
+
+module load python  # Load Python if needed (adjust based on your HPC system)
+source /work3/s203788/Master_Project_2026/EquivariantTransformerMPNN4QuantumComputations/env/master_env/bin/activate # Activate your virtual environment
+python train_qm9.py
+
+#python DataVisualization.py --- IGNORE ---
+------------------------------------------------------------
+
+TERM_RUNLIMIT: job killed after reaching LSF run time limit.
+Exited with exit code 140.
+
+Resource usage summary:
+
+    CPU time :                                   96176.00 sec.
+    Max Memory :                                 2293 MB
+    Average Memory :                             1778.83 MB
+    Total Requested Memory :                     16384.00 MB
+    Delta Memory :                               14091.00 MB
+    Max Swap :                                   -
+    Max Processes :                              8
+    Max Threads :                                26
+    Run time :                                   86528 sec.
+    Turnaround time :                            194971 sec.
+
+The output (if any) is above this job summary.
+
+
+
+PS:
+
+Read file <model_run27713881.err> for stderr output of this job.
+

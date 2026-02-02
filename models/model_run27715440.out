@@ -29,3 +29,334 @@ Loss: L1 (MAE)
 ============================================================
 STARTING TRAINING
 ============================================================
+
+Epoch 001/300
+  Train Loss: 2805916.286763
+  Val Loss:   2803684.815849
+  LR:         1.04e-04
+  ✓ Saved best model (val_loss: 2803684.815849)
+
+Epoch 002/300
+  Train Loss: 2803139.778639
+  Val Loss:   2797381.749656
+  LR:         2.03e-04
+  ✓ Saved best model (val_loss: 2797381.749656)
+
+Epoch 003/300
+  Train Loss: 2787112.401041
+  Val Loss:   2769365.635023
+  LR:         3.02e-04
+  ✓ Saved best model (val_loss: 2769365.635023)
+
+Epoch 004/300
+  Train Loss: 2730650.504534
+  Val Loss:   2672706.590098
+  LR:         4.01e-04
+  ✓ Saved best model (val_loss: 2672706.590098)
+
+Epoch 005/300
+  Train Loss: 2543244.552936
+  Val Loss:   2369426.987770
+  LR:         5.00e-04
+  ✓ Saved best model (val_loss: 2369426.987770)
+
+Epoch 006/300
+  Train Loss: 2023967.852242
+  Val Loss:   1585797.957043
+  LR:         5.00e-04
+  ✓ Saved best model (val_loss: 1585797.957043)
+
+Epoch 007/300
+  Train Loss: 988543.769921
+  Val Loss:   424666.868520
+  LR:         5.00e-04
+  ✓ Saved best model (val_loss: 424666.868520)
+
+Epoch 008/300
+  Train Loss: 252428.882408
+  Val Loss:   165112.399409
+  LR:         5.00e-04
+  ✓ Saved best model (val_loss: 165112.399409)
+
+Epoch 009/300
+  Train Loss: 108849.428665
+  Val Loss:   76054.087053
+  LR:         5.00e-04
+  ✓ Saved best model (val_loss: 76054.087053)
+
+Epoch 010/300
+  Train Loss: 59315.959179
+  Val Loss:   42168.034354
+  LR:         5.00e-04
+  ✓ Saved best model (val_loss: 42168.034354)
+  ✓ Saved checkpoint: trained_models/QM9/checkpoint_epoch_010.pt
+
+Epoch 011/300
+  Train Loss: 37784.125321
+  Val Loss:   35084.956240
+  LR:         4.99e-04
+  ✓ Saved best model (val_loss: 35084.956240)
+
+Epoch 012/300
+  Train Loss: 26023.280326
+  Val Loss:   18548.229861
+  LR:         4.99e-04
+  ✓ Saved best model (val_loss: 18548.229861)
+
+Epoch 013/300
+  Train Loss: 21940.879418
+  Val Loss:   16214.611127
+  LR:         4.99e-04
+  ✓ Saved best model (val_loss: 16214.611127)
+
+Epoch 014/300
+  Train Loss: 18110.943355
+  Val Loss:   12821.102067
+  LR:         4.99e-04
+  ✓ Saved best model (val_loss: 12821.102067)
+
+Epoch 015/300
+  Train Loss: 15678.953197
+  Val Loss:   10811.251216
+  LR:         4.99e-04
+  ✓ Saved best model (val_loss: 10811.251216)
+
+Epoch 016/300
+  Train Loss: 13769.941395
+  Val Loss:   13013.862438
+  LR:         4.98e-04
+
+Epoch 017/300
+  Train Loss: 12284.034546
+  Val Loss:   10124.774444
+  LR:         4.98e-04
+  ✓ Saved best model (val_loss: 10124.774444)
+
+Epoch 018/300
+  Train Loss: 11444.980832
+  Val Loss:   13642.495434
+  LR:         4.98e-04
+
+Epoch 019/300
+  Train Loss: 10934.497202
+  Val Loss:   7831.238799
+  LR:         4.97e-04
+  ✓ Saved best model (val_loss: 7831.238799)
+
+Epoch 020/300
+  Train Loss: 10012.168146
+  Val Loss:   7175.945602
+  LR:         4.97e-04
+  ✓ Saved best model (val_loss: 7175.945602)
+  ✓ Saved checkpoint: trained_models/QM9/checkpoint_epoch_020.pt
+
+Epoch 021/300
+  Train Loss: 9503.367952
+  Val Loss:   8269.667563
+  LR:         4.96e-04
+
+Epoch 022/300
+  Train Loss: 9284.071948
+  Val Loss:   7313.660920
+  LR:         4.96e-04
+
+Epoch 023/300
+  Train Loss: 8546.065485
+  Val Loss:   5917.398113
+  LR:         4.95e-04
+  ✓ Saved best model (val_loss: 5917.398113)
+
+Epoch 024/300
+  Train Loss: 8555.727232
+  Val Loss:   7446.997902
+  LR:         4.95e-04
+
+Epoch 025/300
+  Train Loss: 8281.665542
+  Val Loss:   6015.931949
+  LR:         4.94e-04
+
+Epoch 026/300
+  Train Loss: 7774.987014
+  Val Loss:   5542.429010
+  LR:         4.94e-04
+  ✓ Saved best model (val_loss: 5542.429010)
+
+Epoch 027/300
+  Train Loss: 7708.074718
+  Val Loss:   7418.977790
+  LR:         4.93e-04
+
+Epoch 028/300
+  Train Loss: 7174.196345
+  Val Loss:   7269.217868
+  LR:         4.93e-04
+
+Epoch 029/300
+  Train Loss: 7149.221767
+  Val Loss:   6402.339886
+  LR:         4.92e-04
+
+Epoch 030/300
+  Train Loss: 7030.289893
+  Val Loss:   4369.111688
+  LR:         4.91e-04
+  ✓ Saved best model (val_loss: 4369.111688)
+  ✓ Saved checkpoint: trained_models/QM9/checkpoint_epoch_030.pt
+
+Epoch 031/300
+  Train Loss: 7027.382795
+  Val Loss:   4802.346397
+  LR:         4.90e-04
+
+Epoch 032/300
+  Train Loss: 6766.692714
+  Val Loss:   3950.476875
+  LR:         4.90e-04
+  ✓ Saved best model (val_loss: 3950.476875)
+
+Epoch 033/300
+  Train Loss: 6431.539048
+  Val Loss:   5007.738851
+  LR:         4.89e-04
+
+Epoch 034/300
+  Train Loss: 6686.199803
+  Val Loss:   4359.120442
+  LR:         4.88e-04
+
+Epoch 035/300
+  Train Loss: 6540.808809
+  Val Loss:   10346.851235
+  LR:         4.87e-04
+
+Epoch 036/300
+  Train Loss: 6289.901726
+  Val Loss:   6046.631973
+  LR:         4.86e-04
+
+Epoch 037/300
+  Train Loss: 6085.790966
+  Val Loss:   4951.838007
+  LR:         4.86e-04
+
+Epoch 038/300
+  Train Loss: 6160.203926
+  Val Loss:   6246.827674
+  LR:         4.85e-04
+
+Epoch 039/300
+  Train Loss: 5976.142861
+  Val Loss:   4574.010907
+  LR:         4.84e-04
+
+Epoch 040/300
+  Train Loss: 6049.105743
+  Val Loss:   6392.290840
+  LR:         4.83e-04
+  ✓ Saved checkpoint: trained_models/QM9/checkpoint_epoch_040.pt
+
+Epoch 041/300
+  Train Loss: 5792.375210
+  Val Loss:   4571.754916
+  LR:         4.82e-04
+
+Epoch 042/300
+  Train Loss: 5605.301792
+  Val Loss:   4132.481978
+  LR:         4.81e-04
+
+Epoch 043/300
+  Train Loss: 5809.785716
+  Val Loss:   3645.473273
+  LR:         4.80e-04
+  ✓ Saved best model (val_loss: 3645.473273)
+
+Epoch 044/300
+  Train Loss: 5683.948350
+  Val Loss:   4739.506446
+  LR:         4.79e-04
+
+Epoch 045/300
+  Train Loss: 5460.824054
+  Val Loss:   4420.468564
+  LR:         4.78e-04
+
+Epoch 046/300
+  Train Loss: 5398.720768
+  Val Loss:   4628.224052
+  LR:         4.77e-04
+
+Epoch 047/300
+  Train Loss: 5477.243716
+  Val Loss:   6105.734926
+  LR:         4.75e-04
+
+Epoch 048/300
+  Train Loss: 5303.387208
+  Val Loss:   3391.232617
+  LR:         4.74e-04
+  ✓ Saved best model (val_loss: 3391.232617)
+
+------------------------------------------------------------
+Sender: LSF System <lsfadmin@hpc.dtu.dk>
+Subject: Job 27715440: <model_run> in cluster <dcc> Exited
+
+Job <model_run> was submitted from host <n-62-12-19> by user <s203788> in cluster <dcc> at Sun Feb  1 16:20:47 2026
+Job was executed on host(s) <4*n-62-12-20>, in queue <gpua100>, as user <s203788> in cluster <dcc> at Sun Feb  1 16:20:49 2026
+</zhome/45/0/155089> was used as the home directory.
+</work3/s203788/Master_Project_2026/EquivariantTransformerMPNN4QuantumComputations/models> was used as the working directory.
+Started at Sun Feb  1 16:20:49 2026
+Terminated at Mon Feb  2 09:04:16 2026
+Results reported at Mon Feb  2 09:04:16 2026
+
+Your job looked like:
+
+------------------------------------------------------------
+# LSBATCH: User input
+#!/bin/bash
+#BSUB -J model_run
+#BSUB -o model_run%J.out
+#BSUB -e model_run%J.err   
+#BSUB -q gpua100
+#BSUB -W 30:00
+#BSUB -gpu "num=1:mode=exclusive_process"
+#BSUB -R "rusage[mem=8GB]"
+#BSUB -n 4
+### -- specify that the cores must be on the same host -- 
+#BSUB -R "span[hosts=1]"
+
+
+
+
+module load python  # Load Python if needed (adjust based on your HPC system)
+source /work3/s203788/Master_Project_2026/EquivariantTransformerMPNN4QuantumComputations/env/master_env/bin/activate # Activate your virtual environment
+python train_qm9.py
+
+#python DataVisualization.py --- IGNORE ---
+------------------------------------------------------------
+
+TERM_OWNER: job killed by owner.
+Exited with exit code 130.
+
+Resource usage summary:
+
+    CPU time :                                   67232.37 sec.
+    Max Memory :                                 2347 MB
+    Average Memory :                             1853.02 MB
+    Total Requested Memory :                     32768.00 MB
+    Delta Memory :                               30421.00 MB
+    Max Swap :                                   -
+    Max Processes :                              8
+    Max Threads :                                27
+    Run time :                                   60242 sec.
+    Turnaround time :                            60209 sec.
+
+The output (if any) is above this job summary.
+
+
+
+PS:
+
+Read file <model_run27715440.err> for stderr output of this job.
+
