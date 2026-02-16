@@ -41,7 +41,7 @@ config = {
     
     'warmup_epochs': 5,     # Paper: 5 epochs of linear warmup
     
-    'epochs': 300,          # Paper: 300 epochs total
+    'epochs': 300,          # Paper: 300 epochs total, change back to 300
     
     # ================================================================
     # TRAINING SETTINGS (from paper Table)

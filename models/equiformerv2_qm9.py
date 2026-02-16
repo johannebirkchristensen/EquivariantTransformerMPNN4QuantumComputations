@@ -679,7 +679,7 @@ class EquiformerV2_QM9(BaseModel, nn.Module): # we let also it inherit from nn.M
             property_pred = torch.zeros(
                 len(data['natoms']), 
                 device=self.device, 
-                dtype=self.dtype
+                dtype=node_contribution.dtype # was self.dtype
             )
             property_pred.index_add_(0, data['batch'], node_contribution)
             

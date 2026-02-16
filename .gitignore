@@ -211,3 +211,12 @@ env/master_env/
 datasets/QM9/qm9_data
 datasets/QM9/qm9.db
 trained_models
+datasets/OC20/
+
+*.pt
+*.ckpt
+*.npy
+*.db
+*.npz
+*.err
+*.png

@@ -4,7 +4,7 @@ from ase.db import connect
 import numpy as np
 import torch
 
-EV_TO_MEV = 1000.0
+EV_TO_MEV = 1000 # eV to meV conversion factor.. changed to 1 to try eV units 
 
 PROPERTY_NAMES = ['α', 'Δε', 'ε_HOMO', 'ε_LUMO', 'μ', 'C_v',
                   'G', 'H', 'R²', 'U', 'U₀', 'ZPVE']
@@ -144,6 +144,6 @@ def compute_qm9_stats(db_path,
         'pt': pt_path
     }
 # ================================================================
-DB_PATH = '/work3/s203788/Master_Project_2026/EquivariantTransformerMPNN4QuantumComputations/datasets/QM9/qm9.db'
-result = compute_qm9_stats(DB_PATH, max_samples=None, out_dir='run_stats', prefix='qm9_full')
+DB_PATH = '/work3/s203788/Master_Project_2026/EquivariantTransformerMPNN4QuantumComputations/datasets/QM9/qm9_atomref_corrected.db'
+result = compute_qm9_stats(DB_PATH, max_samples=None, out_dir='run_stats_corrected', prefix='qm9_full')
 # result['json'] contains the path to the saved JSON summary
