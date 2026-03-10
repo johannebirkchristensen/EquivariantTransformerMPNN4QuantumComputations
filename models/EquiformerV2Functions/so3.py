@@ -3,8 +3,7 @@ Copyright (c) Facebook, Inc. and its affiliates.
 
 This source code is licensed under the MIT license found in the
 LICENSE file in the root directory of this source tree.
-
-
+#EquiformerV2
 TODO:
     1. Simplify the case when `num_resolutions` == 1.
     2. Remove indexing when the shape is the same.
@@ -321,6 +320,17 @@ class SO3_Embedding():
 
     # Reshape the embedding l -> m
     def _m_primary(self, mapping):
+        # DEBUG: print shapes and devices
+       # print("DEBUG _m_primary: self.embedding.shape:", getattr(self, "embedding").shape)
+       # print("DEBUG _m_primary: mapping.to_m.shape:", mapping.to_m.shape)
+       # print("DEBUG dtypes/devices:", self.embedding.dtype, self.embedding.device, mapping.to_m.dtype, mapping.to_m.device)
+
+        # sanity assert
+       # if self.embedding.shape[1] != mapping.to_m.shape[1]:
+        #    raise RuntimeError(
+        #        f"Channel mismatch in _m_primary: embedding dim1 = {self.embedding.shape[1]}, "
+        #        f"mapping.to_m dim1 = {mapping.to_m.shape[1]}. Check mapping creation and embedding channels."
+        #    )
         self.embedding = torch.einsum("nac, ba -> nbc", self.embedding, mapping.to_m)
 
 
