@@ -2,7 +2,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from typing import List
-
+from EquiformerV2Functions.layer_norm import (
+    EquivariantLayerNormArray,
+    EquivariantLayerNormArraySphericalHarmonics,
+    EquivariantRMSNormArraySphericalHarmonics,
+    get_normalization_layer,
+)
 
 class ScaledSiLU(nn.Module):
     def __init__(self, inplace=False):
@@ -299,6 +304,157 @@ class GATAValueActivation(nn.Module):
         edge_channels:   int,
         lmax:            int,
         mmax:            int,
+        num_rbf:         int,
+    ):
+        super().__init__()
+        self.lmax            = lmax
+        self.mmax            = mmax
+        self.hidden_channels = hidden_channels
+        
+        # S = total number of gate chunks: 1 (o_s) + lmax (o_d) + lmax (o_t)
+        self.S               = 1 + 2 * lmax
+
+        # W_rs: expands t_ij [E, edge_C] → [E, S*hidden_C]
+        # This is the W_rs matrix in your paper's Eq. 6
+        self.phi_proj = nn.Linear(num_rbf, self.S * hidden_channels, bias=False)
+        self.W_rs = nn.Linear(edge_channels, self.S * hidden_channels)
+
+        # gamma_s: expands h_j (neighbour scalar features) [E, sphere_C] → [E, S*hidden_C]
+        # This is gamma_s in your paper's Eq. 6
+        self.gamma_s = nn.Sequential(
+            nn.Linear(sphere_channels, self.S * hidden_channels),
+            nn.SiLU(),
+        )
+
+        # X_j channel projection: sphere_C → hidden_C, no bias (equivariance)
+        self.xj_proj = nn.Linear(sphere_channels, hidden_channels, bias=False)
+
+        self.scalar_act = nn.SiLU()
+
+        # full degree block sizes for splitting X_j and rl_ij
+        self.full_degree_sizes    = [2 * l + 1 for l in range(1, lmax + 1)]
+        # mmax-clipped sizes for the output (must match SO2_Convolution basis)
+        self.reduced_degree_sizes = [min(2 * l + 1, 2 * mmax + 1) for l in range(1, lmax + 1)]
+
+    def forward(
+        self,
+        attn_output: torch.Tensor,  # [E, S*hidden_C]  from so2_conv_1 extra m=0 (sea_ij approx)
+        t_ij:        torch.Tensor,  # [E, edge_C]       scalar edge features, HTR-refined
+        h_j:         torch.Tensor,  # [E, sphere_C]     l=0 features of neighbour node
+        X_j:         torch.Tensor,  # [E, (L+1)^2-1, sphere_C]  neighbour steerable (l>=1)
+        rl_ij:       torch.Tensor,  # [E, (L+1)^2-1]    edge SH coefficients (l>=1)
+        phi_r:       torch.Tensor, 
+    ) -> torch.Tensor:              # [E, num_reduced_coeffs, hidden_C]
+
+        C = self.hidden_channels
+
+        # ── Eq. 6: geometric bias  (t_ij W_rs) ⊙ gamma_s(h_j) ───────────────
+        # t_ij carries the refined edge context (distance + atom pair + geometry
+        # accumulated by HTR).  W_rs expands it to gate space.
+        # gamma_s(h_j) expands the neighbour's scalar features to the same space.
+        # Their element-wise product means: "edge context gates neighbour identity"
+        #Expands the edge scalar features into gate space. Asks: "what does the bond geometry/distance/chemistry say about each gate?"
+        # remember h_j is the l = 0 part of the edge node... so we can apply nonlinearities 
+        t_ij_bias = self.W_rs(t_ij) * self.gamma_s(h_j)   * self.phi_proj(phi_r)    # [E, S*C]
+
+        # ── Eq. 6: combine sea_ij with geometric bias ─────────────────────────
+        # and attnd_ouput is from from so2_conv_1. 
+        # This is what is s_ea in gotennet, 
+        combined = attn_output + t_ij_bias                      # [E, S*C]
+
+        # ── Eq. 6: split into o_s, {o_d^(l)}, {o_t^(l)} ─────────────────────
+        #C is numbere of hidden_channels
+        
+        chunks   = combined.split(C, dim=-1)                    # S tensors of [E, C]
+        #o_s: one chunk controlling the scalar (l=0) update
+        o_s      = chunks[0]                                    # [E, C]
+        #o_d_list: one chunk per degree l controlling how much the edge direction rl_ij^(l) contributes
+        o_d_list = list(chunks[1 : 1 + self.lmax])             # lmax × [E, C]
+        
+        #o_t_list: one chunk per degree l controlling how much the neighbour's steerable features X_j^(l) contribute
+        o_t_list = list(chunks[1 + self.lmax :])               # lmax × [E, C]
+
+        # ── scalar output (l=0, Delta h) ──────────────────────────────────────
+        #Apply SiLU to the scalar gate (fine — it's invariant), then add a dimension to make it [E, 1, C] so it can be concatenated with the steerable outputs later.
+        out_scalar = self.scalar_act(o_s).unsqueeze(1)         # [E, 1, C]
+
+        # ── project X_j channels ──────────────────────────────────────────────
+        #from sphere_channels down to hidden_channels. 
+        # by mixing same m´s over the channels. 
+        X_j = self.xj_proj(X_j)                                # [E, (L+1)^2-1, C]
+
+        # split both into per-degree blocks
+        #This splits the `(L+1)^2-1` spatial dimension into per-degree blocks:
+
+        #X_j:   [E, 3+5+7+9, C]  →  [E,3,C], [E,5,C], [E,7,C], [E,9,C]
+        #rl_ij: [E, 3+5+7+9]     →  [E,3],   [E,5],   [E,7],   [E,9]
+        X_j_by_l   = torch.split(X_j,   self.full_degree_sizes, dim=1)
+        rl_ij_by_l = torch.split(rl_ij, self.full_degree_sizes, dim=1)
+
+        # ── Eq. 7: per-degree steerable output ───────────────────────────────
+        # Delta X^(l) = o_d^(l) * r^(l)_ij  +  o_t^(l) * X^(l)_j
+        out_degrees = []
+        for l_idx in range(self.lmax):
+            m_width = self.reduced_degree_sizes[l_idx]         # mmax-clipped width.. to make sure it works with equiformerV2s mmax
+            # And then only keep part of neighbours spherical embedding l up to mmax.. same with edge embedding. 
+            Xj_l = X_j_by_l[l_idx][:, :m_width, :]            # [E, m_width, C]
+            rl_l = rl_ij_by_l[l_idx][:, :m_width].unsqueeze(-1) # [E, m_width, 1]
+
+            od_l = o_d_list[l_idx].unsqueeze(1)                # [E, 1, C]
+            ot_l = o_t_list[l_idx].unsqueeze(1)                # [E, 1, C]
+
+            dir_term    = od_l * rl_l                          # [E, m_width, C]
+            
+            #Each channel of `X_j^(l)` is scaled by the corresponding gate value.
+            #This is: *"carry the neighbour's steerable features into the update,
+            # scaled by how much the gate opens"*. Equivariant because `X_j` transforms correctly under rotation 
+            # and we only multiply by an invariant scalar gate... so different number per channel. and per l
+            # but for a specific l and channel, it gets multiplied with same number ot_l
+            
+            # same for direction term
+
+            tensor_term = ot_l * Xj_l                          # [E, m_width, C]
+            out_degrees.append(dir_term + tensor_term)
+        ##Stack all degree outputs back together along the spatial dimension, then prepend the scalar (l=0) output. 
+        # The result is a full steerable feature tensor ready to be passed to `so2_conv_2`.
+
+        out_vectors = torch.cat(out_degrees, dim=1)            # [E, num_reduced-1, C]
+        return torch.cat([out_scalar, out_vectors], dim=1)     # [E, num_reduced, C]
+    
+    
+
+class GATAValueActivation_with_Angular(nn.Module):
+    """
+    Full GATA value activation implementing your paper's Eq. 6 and 7.
+
+    Eq. 6 — the combined input before splitting:
+        sea_ij  +  (t_ij W_rs) ⊙ gamma_s(h_j) ⊙ phi(r^0_ij)
+
+    where:
+        sea_ij      = attention-weighted value (from so2_conv_1 extra m=0 output)
+        t_ij W_rs   = learned expansion of the (HTR-refined) edge scalars
+        gamma_s(h_j)= learned expansion of the neighbour's scalar (l=0) features
+        phi(r^0_ij) = Gaussian smearing of raw distance — already absorbed into
+                      t_ij via its initialization from edge_dist_feat
+
+    Eq. 7 — the steerable update:
+        Delta X^(l)_i = agg_j  o^d,(l)_ij * r^(l)_ij  +  o^t,(l)_ij * X^(l)_j
+
+    Args:
+        sphere_channels: node SO3 embedding width... from this we get h_j ( the l = 0 part of SO(3) embedding ), and X^l ( the l>0 part of the SO(3) embedding)
+        hidden_channels: so2_conv_1 output width (= gate width C)
+        edge_channels:   t_ij width
+        lmax:            maximum degree
+        mmax:            maximum order (for mmax-reduced SO2 basis)
+    """
+
+    def __init__(
+        self,
+        sphere_channels: int,
+        hidden_channels: int,
+        edge_channels:   int,
+        lmax:            int,
+        mmax:            int,
     ):
         super().__init__()
         self.lmax            = lmax
@@ -411,9 +567,6 @@ class GATAValueActivation(nn.Module):
 
         out_vectors = torch.cat(out_degrees, dim=1)            # [E, num_reduced-1, C]
         return torch.cat([out_scalar, out_vectors], dim=1)     # [E, num_reduced, C]
-    
-    
-
 
 
 class GlobalNodeAttention(nn.Module):
@@ -543,7 +696,6 @@ class GlobalNodeAttention(nn.Module):
         q, k, v = split_heads(q), split_heads(k), split_heads(v)
 
         # ── Attention logits ──────────────────────────────────────────────────
-        # ( the thing that is inside the softmax of attention. )
         attn = torch.matmul(q, k.transpose(-2, -1)) * self.scale   # [B, H, N, N]
 
         # Add Euclidean RoPE distance bias
@@ -912,7 +1064,7 @@ class GlobalNodeAttentionFullEquivariant(nn.Module):
             out_by_l.append(out_l)
 
         # reassemble full embedding
-        return torch.cat(out_by_l, dim=1)   # [N, lmax+1^2, sphere_channels]
+        return torch.cat(out_by_l, dim=1)   # [N, 25, sphere_channels]
     
     
     
@@ -924,7 +1076,7 @@ class GlobalNodeAttentionFull(nn.Module):
     All-to-all node attention over the FULL SO3 embedding (all l degrees).
     Breaks rotational equivariance — only use as the final layer before
     the scalar energy head.
-
+ 
     Input:  x.embedding  [N, (lmax+1)^2, sphere_channels]
     Output: x.embedding  [N, (lmax+1)^2, sphere_channels]  (same shape)
     """
@@ -1132,7 +1284,7 @@ class GlobalNodeAttentionHTR(nn.Module):
         for l_idx, feat_l in enumerate(feat_by_l):
             # feat_l: [N, 2l+1, C]
             # sh_l:   [N, N, 2l+1]  spherical harmonics of displacement
-            sh_l = self._compute_sh(r_hat, l_idx)           # [N, N, 2l+1] ( we compute it for all bonds)
+            sh_l = self._compute_sh(r_hat, l_idx)           # [N, N, 2l+1]
 
             # inner product over the (2l+1) spatial dimension:
             # einsum: imc, ijm -> ijc
@@ -1209,359 +1361,125 @@ class GlobalNodeAttentionHTR(nn.Module):
 
         return torch.cat(out_by_l, dim=1)   # [N, 25, C]
     
-    
-    
-    
-    
 
-class GlobalNodeAttentionHTR_with_distance(nn.Module):
+
+
+class AngularHTR(nn.Module):
     """
-    All-to-all node attention where keys and queries are computed from
-    HTR-style inner products between steerable features and pairwise
-    displacement directions, augmented with a radial basis function
-    encoding of the interatomic distance.
-
-    For each degree l, the invariant score between atoms i and j is:
-        s_ij^(l) = sum_m  X_i^(l,m) * Y_l^m(r_hat_ij)
-
-    The distance ||r_ij|| is embedded via a Gaussian RBF and added to
-    the invariant score before computing queries and keys, so that the
-    attention weights depend on both the directional alignment and the
-    distance between atoms.
+    Three-body refinement of the angular stream a_ij.
+    For edge i→j, aggregates inner products <X_k^(l), X_j^(l)>
+    over all other neighbors k of atom i.
+    This encodes angular context: given bond i→j, what is the
+    geometric relationship with all other bonds i→k?
+    Rotation-invariant: inner product of two equivariant tensors ✓
     """
 
     def __init__(
         self,
         sphere_channels: int,
+        edge_channels:   int,
         lmax:            int,
-        num_heads:       int   = 8,
-        dropout:         float = 0.0,
-        num_rbf:         int   = 16,
-        rbf_cutoff:      float = 10.0,
     ):
         super().__init__()
-        assert sphere_channels % num_heads == 0
+        self.lmax         = lmax
+        self.edge_channels = edge_channels
+        self.degree_sizes = [2 * l + 1 for l in range(1, lmax + 1)]
 
-        self.sphere_channels = sphere_channels
-        self.lmax            = lmax
-        self.num_heads       = num_heads
-        self.head_dim        = sphere_channels // num_heads
-        self.scale           = self.head_dim ** -0.5
-        self.degree_sizes    = [2 * l + 1 for l in range(lmax + 1)]
-        self.num_rbf         = num_rbf
-        self.rbf_cutoff      = rbf_cutoff
+        # project destination node features for query (j) and key (k) sides
+        self.W_q = nn.Linear(sphere_channels, edge_channels, bias=False)
+        self.W_k = nn.Linear(sphere_channels, edge_channels, bias=False)
 
-        # RBF centers — fixed, not learned
-        self.register_buffer(
-            'rbf_centers',
-            torch.linspace(0.0, rbf_cutoff, num_rbf)
+        # weight t_ij contribution to angular context
+        self.t_proj = nn.Linear(edge_channels, edge_channels, bias=False)
+        
+        
+        # replace by seperable layer norm !! - else equivariance is broken. 
+        # and remember, we dont 
+        self.x_norm = get_normalization_layer('rms_norm_sh', lmax=lmax, num_channels=sphere_channels)
+        #self.x_norm = nn.LayerNorm(sphere_channels)
+        # t is scalar, so normalise with standard LayerNorm
+        self.t_norm = nn.LayerNorm(edge_channels)
+        # update gate for a_ij
+        self.gamma_a = nn.Sequential(
+            nn.Linear(edge_channels, edge_channels),
+            nn.SiLU(),
+            nn.Linear(edge_channels, edge_channels),
+            nn.SiLU(),
         )
-        self.rbf_width = (rbf_cutoff / num_rbf) ** 2
-
-        # Project RBF encoding to sphere_channels so it can be added to score
-        self.rbf_proj = nn.Linear(num_rbf, sphere_channels, bias=False)
-
-        self.q_proj  = nn.Linear(sphere_channels, sphere_channels, bias=True)
-        self.k_proj  = nn.Linear(sphere_channels, sphere_channels, bias=True)
-
-        self.v_projs = nn.ModuleList([
-            nn.Linear(sphere_channels, sphere_channels, bias=(l == 0))
-            for l in range(lmax + 1)
-        ])
-        self.out_projs = nn.ModuleList([
-            nn.Linear(sphere_channels, sphere_channels, bias=False)
-            for _ in range(lmax + 1)
-        ])
-        self.norms = nn.ModuleList([
-            nn.LayerNorm(sphere_channels)
-            for _ in range(lmax + 1)
-        ])
-
-        self.dropout = nn.Dropout(dropout)
-
-    def _compute_sh(self, rvec, l):
-        from e3nn import o3
-        N         = rvec.shape[0]
-        rvec_flat = rvec.reshape(-1, 3)
-        sh_flat   = o3.spherical_harmonics(l, rvec_flat, normalize=True)
-        return sh_flat.reshape(N, N, 2 * l + 1)
-
-    def _rbf(self, dist):
-        """
-        Gaussian RBF encoding of pairwise distances.
-        dist:    [N, N, 1]
-        returns: [N, N, num_rbf]
-        """
-        return torch.exp(
-            -((dist - self.rbf_centers) ** 2) / self.rbf_width
+        self.gamma_w = nn.Sequential(
+            nn.Linear(edge_channels, edge_channels),
+            nn.SiLU(),
         )
 
-    def _htr_invariant(self, x_emb, pos, batch):
-        N      = x_emb.shape[0]
-        device = x_emb.device
-
-        # pairwise displacement vectors
-        diff  = pos.unsqueeze(1) - pos.unsqueeze(0)              # [N, N, 3]
-        dist  = diff.norm(dim=-1, keepdim=True).clamp(min=1e-8)  # [N, N, 1]
-        r_hat = diff / dist                                       # [N, N, 3]
-
-        # validity mask
-        same_graph = (batch.unsqueeze(1) == batch.unsqueeze(0))  # [N, N]
-        self_mask  = torch.eye(N, dtype=torch.bool, device=device)
-        valid_mask = same_graph & ~self_mask                     # [N, N]
-
-        # HTR directional scores — sum over degrees
-        score     = torch.zeros(N, N, self.sphere_channels, device=device, dtype=x_emb.dtype)
-        feat_by_l = torch.split(x_emb, self.degree_sizes, dim=1)
-
-        for l_idx, feat_l in enumerate(feat_by_l):
-            sh_l = self._compute_sh(r_hat, l_idx)               # [N, N, 2l+1]
-            ip   = torch.einsum('imc, ijm -> ijc', feat_l, sh_l) # [N, N, C]
-            score = score + ip / self.degree_sizes[l_idx]
-
-        # distance embedding — added to the invariant score
-        dist_emb = self._rbf(dist)                               # [N, N, num_rbf]
-        dist_emb = self.rbf_proj(dist_emb)                       # [N, N, C]
-        score    = score + dist_emb                              # [N, N, C]
-
-        # zero out invalid pairs
-        score = score * valid_mask.unsqueeze(-1).float()         # [N, N, C]
-
-        return score                                             # [N, N, C]
-
-    def forward(self, x_emb, batch, pos):
-        N      = x_emb.shape[0]
-        B      = int(batch.max().item()) + 1
-        device = x_emb.device
-
-        # invariant pairwise scores — now includes distance
-        score_ij = self._htr_invariant(x_emb, pos, batch)       # [N, N, C]
-
-        # Q from i's average score profile, K from j's
-        q_flat = self.q_proj(score_ij.mean(dim=1))              # [N, C]
-        k_flat = self.k_proj(score_ij.mean(dim=0))              # [N, C]
-
-        def to_heads(t):
-            return t.view(N, self.num_heads, self.head_dim)
-
-        q = to_heads(q_flat)                                     # [N, H, head_dim]
-        k = to_heads(k_flat)                                     # [N, H, head_dim]
-
-        attn = torch.einsum('ihd, jhd -> hij', q, k) * self.scale  # [H, N, N]
-
-        same_graph = (batch.unsqueeze(1) == batch.unsqueeze(0))
-        attn = attn.masked_fill(~same_graph.unsqueeze(0), float('-inf'))
-        attn = F.softmax(attn, dim=-1)
-        attn = torch.nan_to_num(attn, nan=0.0)
-        attn = self.dropout(attn)
-
-        # per-degree equivariant value aggregation — unchanged
-        feat_by_l = torch.split(x_emb, self.degree_sizes, dim=1)
-        out_by_l  = []
-
-        for l_idx, feat_l in enumerate(feat_by_l):
-            v_l = self.v_projs[l_idx](feat_l)                   # [N, 2l+1, C]
-            m   = self.degree_sizes[l_idx]
-            v_l = v_l.view(N, m, self.num_heads, self.head_dim)
-
-            out_l = torch.einsum('hij, jmhd -> imhd', attn, v_l)
-            out_l = out_l.reshape(N, m, self.sphere_channels)
-            out_l = self.out_projs[l_idx](out_l)
-            out_l = self.norms[l_idx](feat_l + out_l)
-            out_by_l.append(out_l)
-
-        return torch.cat(out_by_l, dim=1)                        # [N, (lmax+1)^2, C]
-    
-    
-
-class GlobalNodeAttentionHTR_with_ROPE(nn.Module):
-    """
-    All-to-all node attention where keys and queries are computed from
-    HTR-style inner products between steerable features and pairwise
-    displacement directions, augmented with a Euclidean RoPE distance
-    bias on attention logits (same formulation as GlobalNodeAttention).
-
-    For each degree l, the invariant score between atoms i and j is:
-        s_ij^(l) = sum_m  X_i^(l,m) * Y_l^m(r_hat_ij)
-
-    The distance ||r_ij|| is additionally encoded via learned Fourier
-    features and added as a per-head bias to the attention logits:
-        bias[h, i, j] = rope_proj(cos(omega * ||r_i - r_j||))
-
-    This is rotation-invariant: the HTR scores are invariant by
-    construction, and the RoPE bias depends only on scalar distances.
-    """
-
-    def __init__(
+    def forward(
         self,
-        sphere_channels: int,
-        lmax:            int,
-        num_heads:       int   = 8,
-        dropout:         float = 0.0,
-        num_rbf:         int   = 16,
-        rbf_cutoff:      float = 10.0,
-        use_rope:        bool  = True,
-        rope_dim:        int   = 16,
-    ):
-        super().__init__()
-        assert sphere_channels % num_heads == 0
+        a_ij:       torch.Tensor,   # [E, edge_channels]  angular stream
+        t_ij:       torch.Tensor,   # [E, edge_channels]  pairwise stream
+        X_all:      torch.Tensor,   # [N, (L+1)^2-1, sphere_C]
+        edge_index: torch.Tensor,   # [2, E]
+    ) -> torch.Tensor:              # [E, edge_channels]
+        X_all = self.x_norm(X_all)      # X_all is now [N, 25, C] — matches norm ✓
+        X_all = X_all[:, 1:, :]         # strip l=0 → [N, 24, C] for angular computation
+        t_ij  = self.t_norm(t_ij)
+        E      = a_ij.shape[0]
+        N      = X_all.shape[0]
+        device = a_ij.device
 
-        self.sphere_channels = sphere_channels
-        self.lmax            = lmax
-        self.num_heads       = num_heads
-        self.head_dim        = sphere_channels // num_heads
-        self.scale           = self.head_dim ** -0.5
-        self.degree_sizes    = [2 * l + 1 for l in range(lmax + 1)]
-        self.use_rope        = use_rope
-        self.rope_dim        = rope_dim
+        src = edge_index[0]
+        dst = edge_index[1]
 
-        # RBF centers — fixed, not learned
-        self.register_buffer(
-            'rbf_centers',
-            torch.linspace(0.0, rbf_cutoff, num_rbf)
-        )
-        self.rbf_width = (rbf_cutoff / num_rbf) ** 2
+        X_by_l = torch.split(X_all, self.degree_sizes, dim=1)
 
-        # Project RBF encoding to sphere_channels so it can be added to score
-        self.rbf_proj = nn.Linear(num_rbf, sphere_channels, bias=False)
 
-        self.q_proj  = nn.Linear(sphere_channels, sphere_channels, bias=True)
-        self.k_proj  = nn.Linear(sphere_channels, sphere_channels, bias=True)
 
-        self.v_projs = nn.ModuleList([
-            nn.Linear(sphere_channels, sphere_channels, bias=(l == 0))
-            for l in range(lmax + 1)
-        ])
-        self.out_projs = nn.ModuleList([
-            nn.Linear(sphere_channels, sphere_channels, bias=False)
-            for _ in range(lmax + 1)
-        ])
-        self.norms = nn.ModuleList([
-            nn.LayerNorm(sphere_channels)
-            for _ in range(lmax + 1)
-        ])
+         # count neighbors per source node ( get rid of NAN)
+        deg = torch.zeros(N, device=device, dtype=a_ij.dtype)
+        deg.scatter_add_(0, src, torch.ones(E, device=device, dtype=a_ij.dtype))
+        deg = deg.clamp(min=1.0)                               # [N]
 
-        self.dropout = nn.Dropout(dropout)
+        w_angular = torch.zeros(E, self.edge_channels, device=device, dtype=a_ij.dtype)
 
-        # Euclidean RoPE: learned Fourier frequencies for pairwise distances.
-        # Each head gets its own scalar bias on the logit for pair (i,j):
-        #   bias_ij = rope_proj(cos(omega * d_ij))
-        if use_rope:
-            self.rope_freqs = nn.Parameter(torch.randn(rope_dim) * 0.1)
-            self.rope_proj  = nn.Linear(rope_dim, num_heads, bias=False)
+        for l_idx in range(self.lmax):
+            # project destination features for each edge
+            Xj_l = self.W_q(X_by_l[l_idx][dst])   # [E, 2l+1, edge_C]
+            Xk_l = self.W_k(X_by_l[l_idx][dst])   # [E, 2l+1, edge_C]
 
-    def _euclidean_rope_bias(
-        self,
-        pos:   torch.Tensor,   # [N, 3]
-        batch: torch.Tensor,   # [N]
-    ) -> torch.Tensor:         # [H, N, N]
-        """
-        Compute additive distance bias for attention logits in flat [H, N, N]
-        space, matching the flat attention format of GlobalNodeAttentionHTR.
+            # aggregate X_k over all edges pointing to each source node
+            # for edge e=(i,j): we want sum over k in N(i) of X_k features
+            # we scatter over src (source of each edge = atom i)
+            agg_k = torch.zeros(
+                N, self.degree_sizes[l_idx], self.edge_channels,
+                device=device, dtype=a_ij.dtype
+            )
+            # scatter Xk_l contributions: for each edge e=(i,j), add to node i
+            #tensor.scatter_add_(dim, index, src)... so we change the view of src. to be able to add the whole Xk_l[e] block to agg_k[src[e]]
+            #scatter_add_ scatter add means that we add the neighbours for each node at the sametime. 
+            agg_k.scatter_add_(
+                0,
+                src.view(-1, 1, 1).expand_as(Xk_l),
+                Xk_l,
+            )
+             # normalize by degree → mean instead of sum
+             # the agg_k is the X_i^l with the line above it. 
+            agg_k = agg_k / deg.view(N, 1, 1)                 # [N, 2l+1, edge_C]
 
-        bias[h, i, j] = rope_proj(cos(omega * ||r_i - r_j||))
+            ip = (Xj_l * agg_k[src]).sum(dim=1)               # [E, edge_C]
+            w_angular = w_angular + ip / self.degree_sizes[l_idx]
 
-        Cross-graph pairs are zeroed out (they are already masked to -inf
-        in the attention logits, but we zero here for cleanliness).
-        """
-        # Pairwise distances [N, N]
-        diff = pos.unsqueeze(1) - pos.unsqueeze(0)          # [N, N, 3]
-        dist = diff.norm(dim=-1)                            # [N, N]
+        # weight by pairwise stream
+        w_angular = w_angular * self.t_proj(t_ij)
 
-        # Fourier encoding: [N, N, rope_dim]
-        omega   = self.rope_freqs.abs()                     # [rope_dim]
-        fourier = torch.cos(dist.unsqueeze(-1) * omega)     # [N, N, rope_dim]
+        delta = self.gamma_w(w_angular) * self.gamma_a(a_ij)
+        return a_ij + delta
 
-        # Project to per-head bias: [N, N, H] → [H, N, N]
-        bias = self.rope_proj(fourier).permute(2, 0, 1)     # [H, N, N]
+            # for each edge e=(i,j): <X_j^l, agg_k[i]>
+            # agg_k[src[e]] gives the sum of X_k features at source node i
+            #ip = (Xj_l * agg_k[src]).sum(dim=1)   # [E, edge_C]
+            #w_angular = w_angular + ip / self.degree_sizes[l_idx]
+            
 
-        # Zero out cross-graph pairs
-        same_graph = (batch.unsqueeze(1) == batch.unsqueeze(0))  # [N, N]
-        bias = bias * same_graph.unsqueeze(0).float()       # [H, N, N]
+        # weight by pairwise stream
+        #w_angular = w_angular * self.t_proj(t_ij)
 
-        return bias
-
-    def _compute_sh(self, rvec, l):
-        from e3nn import o3
-        N         = rvec.shape[0]
-        rvec_flat = rvec.reshape(-1, 3)
-        sh_flat   = o3.spherical_harmonics(l, rvec_flat, normalize=True)
-        return sh_flat.reshape(N, N, 2 * l + 1)
-
-    def _htr_invariant(self, x_emb, pos, batch):
-        N      = x_emb.shape[0]
-        device = x_emb.device
-
-        # pairwise displacement vectors
-        diff  = pos.unsqueeze(1) - pos.unsqueeze(0)              # [N, N, 3]
-        dist  = diff.norm(dim=-1, keepdim=True).clamp(min=1e-8)  # [N, N, 1]
-        r_hat = diff / dist                                       # [N, N, 3]
-
-        # validity mask
-        same_graph = (batch.unsqueeze(1) == batch.unsqueeze(0))  # [N, N]
-        self_mask  = torch.eye(N, dtype=torch.bool, device=device)
-        valid_mask = same_graph & ~self_mask                      # [N, N]
-
-        # HTR directional scores — sum over degrees
-        score     = torch.zeros(N, N, self.sphere_channels, device=device, dtype=x_emb.dtype)
-        feat_by_l = torch.split(x_emb, self.degree_sizes, dim=1)
-
-        for l_idx, feat_l in enumerate(feat_by_l):
-            sh_l  = self._compute_sh(r_hat, l_idx)               # [N, N, 2l+1]
-            ip    = torch.einsum('imc, ijm -> ijc', feat_l, sh_l) # [N, N, C]
-            score = score + ip / self.degree_sizes[l_idx]
-
-        # zero out invalid pairs
-        score = score * valid_mask.unsqueeze(-1).float()          # [N, N, C]
-
-        return score                                              # [N, N, C]
-
-    def forward(self, x_emb, batch, pos):
-        N      = x_emb.shape[0]
-        B      = int(batch.max().item()) + 1
-        device = x_emb.device
-
-        # invariant pairwise scores [N, N, C]
-        score_ij = self._htr_invariant(x_emb, pos, batch)
-
-        # Q from i's average score profile, K from j's
-        q_flat = self.q_proj(score_ij.mean(dim=1))              # [N, C]
-        k_flat = self.k_proj(score_ij.mean(dim=0))              # [N, C]
-
-        def to_heads(t):
-            return t.view(N, self.num_heads, self.head_dim)
-
-        q = to_heads(q_flat)                                     # [N, H, head_dim]
-        k = to_heads(k_flat)                                     # [N, H, head_dim]
-
-        attn = torch.einsum('ihd, jhd -> hij', q, k) * self.scale  # [H, N, N]
-
-        # mask cross-graph pairs
-        same_graph = (batch.unsqueeze(1) == batch.unsqueeze(0))  # [N, N]
-        attn = attn.masked_fill(~same_graph.unsqueeze(0), float('-inf'))
-
-        # add Euclidean RoPE distance bias (same formulation as script 1)
-        if self.use_rope:
-            pos  = pos.detach()                                  # prevent NaN in gradients
-            attn = attn + self._euclidean_rope_bias(pos, batch)
-
-        attn = F.softmax(attn, dim=-1)
-        attn = torch.nan_to_num(attn, nan=0.0)
-        attn = self.dropout(attn)
-
-        # per-degree equivariant value aggregation
-        feat_by_l = torch.split(x_emb, self.degree_sizes, dim=1)
-        out_by_l  = []
-
-        for l_idx, feat_l in enumerate(feat_by_l):
-            v_l = self.v_projs[l_idx](feat_l)                   # [N, 2l+1, C]
-            m   = self.degree_sizes[l_idx]
-            v_l = v_l.view(N, m, self.num_heads, self.head_dim)
-
-            out_l = torch.einsum('hij, jmhd -> imhd', attn, v_l)
-            out_l = out_l.reshape(N, m, self.sphere_channels)
-            out_l = self.out_projs[l_idx](out_l)
-            out_l = self.norms[l_idx](feat_l + out_l)
-            out_by_l.append(out_l)
-
-        return torch.cat(out_by_l, dim=1)                        # [N, (lmax+1)^2, C]
+        #delta = self.gamma_w(w_angular) * self.gamma_a(a_ij)
+        #return a_ij + delta

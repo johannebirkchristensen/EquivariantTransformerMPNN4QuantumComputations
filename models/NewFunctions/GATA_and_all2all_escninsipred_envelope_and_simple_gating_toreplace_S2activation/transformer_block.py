@@ -20,8 +20,6 @@ from .activation import (
     ScaledSmoothLeakyReLU,
     SmoothLeakyReLU,
     GateActivation,
-    SeparableS2Activation,
-    S2Activation,
     HTR,
     GATAValueActivation,
 )
@@ -366,11 +364,38 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-
-
 class FeedForwardNetwork(torch.nn.Module):
     """
-    FeedForwardNetwork: unchanged from original EquiformerV2.
+    FFN with gated nonlinearity directly in SH space — eSEN Section 5.2.
+    No grid projection, no SO3_grid needed.
+
+    Architecture:
+        SO3_LinearV2 (expand)  →  GatedNonlinearity  →  SO3_LinearV2 (contract)
+
+    GatedNonlinearity:
+        l=0 (scalar):  ScaledSiLU applied directly.
+                       Invariant → any nonlinearity is valid.
+        l>0 (tensor):  multiplied by sigmoid(linear(x^0_after_silu)).
+                       Gate is invariant (derived from l=0 scalar channel).
+                       Same gate value broadcast across all m within each l
+                       → equivariance preserved exactly.
+
+    Why this is better than S2Activation:
+        S2Activation projects to a discrete spatial grid, applies SiLU,
+        then projects back. The SiLU creates frequency content above lmax
+        which gets aliased on the way back. This slightly breaks equivariance
+        and smoothness of the energy surface. The gated approach never leaves
+        SH space so there is no aliasing at all.
+
+    Gate initialization:
+        Bias set to 2.0 → sigmoid(2) ≈ 0.88 → gates start nearly open.
+        Prevents higher-l features from being killed at initialization,
+        which is the main failure mode of gated equivariant networks.
+
+    API is identical to the old FeedForwardNetwork — same arguments,
+    same call signature — so TransBlockV2 needs no changes.
+    The SO3_grid, mmax_list, use_gate_act, use_grid_mlp, use_sep_s2_act
+    arguments are accepted but unused (kept for drop-in compatibility).
     """
 
     def __init__(
@@ -379,89 +404,75 @@ class FeedForwardNetwork(torch.nn.Module):
         hidden_channels,
         output_channels,
         lmax_list,
-        mmax_list,
-        SO3_grid,
+        mmax_list,           # kept for API compatibility, not used
+        SO3_grid,            # kept for API compatibility, not used
         activation='scaled_silu',
-        use_gate_act=False,
-        use_grid_mlp=False,
-        use_sep_s2_act=True,
+        use_gate_act=False,  # kept for API compatibility, not used
+        use_grid_mlp=False,  # kept for API compatibility, not used
+        use_sep_s2_act=True, # kept for API compatibility, not used
     ):
         super(FeedForwardNetwork, self).__init__()
-        self.sphere_channels     = sphere_channels
-        self.hidden_channels     = hidden_channels
-        self.output_channels     = output_channels
-        self.lmax_list           = lmax_list
-        self.mmax_list           = mmax_list
+        self.max_lmax            = max(lmax_list)
         self.num_resolutions     = len(lmax_list)
-        self.sphere_channels_all = self.num_resolutions * self.sphere_channels
-        self.SO3_grid            = SO3_grid
-        self.use_gate_act        = use_gate_act
-        self.use_grid_mlp        = use_grid_mlp
-        self.use_sep_s2_act      = use_sep_s2_act
-        self.max_lmax            = max(self.lmax_list)
+        self.sphere_channels_all = self.num_resolutions * sphere_channels
+        self.degree_sizes        = [2 * l + 1 for l in range(self.max_lmax + 1)]
 
-        self.so3_linear_1 = SO3_LinearV2(self.sphere_channels_all, self.hidden_channels, lmax=self.max_lmax)
+        # expand: sphere_channels_all → hidden_channels
+        self.so3_linear_1 = SO3_LinearV2(
+            self.sphere_channels_all, hidden_channels, lmax=self.max_lmax
+        )
 
-        if self.use_grid_mlp:
-            if self.use_sep_s2_act:
-                self.scalar_mlp = nn.Sequential(
-                    nn.Linear(self.sphere_channels_all, self.hidden_channels, bias=True),
-                    nn.SiLU(),
-                )
-            else:
-                self.scalar_mlp = None
-            self.grid_mlp = nn.Sequential(
-                nn.Linear(self.hidden_channels, self.hidden_channels, bias=False),
-                nn.SiLU(),
-                nn.Linear(self.hidden_channels, self.hidden_channels, bias=False),
-                nn.SiLU(),
-                nn.Linear(self.hidden_channels, self.hidden_channels, bias=False),
-            )
-        else:
-            if self.use_gate_act:
-                self.gating_linear = torch.nn.Linear(self.sphere_channels_all, self.max_lmax * self.hidden_channels)
-                self.gate_act = GateActivation(self.max_lmax, self.max_lmax, self.hidden_channels)
-            else:
-                if self.use_sep_s2_act:
-                    self.gating_linear = torch.nn.Linear(self.sphere_channels_all, self.hidden_channels)
-                    self.s2_act = SeparableS2Activation(self.max_lmax, self.max_lmax)
-                else:
-                    self.gating_linear = None
-                    self.s2_act = S2Activation(self.max_lmax, self.max_lmax)
+        # scalar (l=0) activation — invariant, no restriction
+        self.scalar_act = ScaledSiLU()
 
-        self.so3_linear_2 = SO3_LinearV2(self.hidden_channels, self.output_channels, lmax=self.max_lmax)
+        # per-degree gate projections, one for each l = 1 .. lmax
+        # input:  hidden_channels (the activated l=0 features)
+        # output: hidden_channels (sigmoid of this gates the l-features)
+        self.gate_projs = nn.ModuleList([
+            nn.Linear(hidden_channels, hidden_channels, bias=True)
+            for _ in range(self.max_lmax)
+        ])
+        # start gates open so higher-l features are not killed at init
+        for proj in self.gate_projs:
+            nn.init.zeros_(proj.weight)
+            nn.init.constant_(proj.bias, 2.0)
+
+        # contract: hidden_channels → output_channels
+        self.so3_linear_2 = SO3_LinearV2(
+            hidden_channels, output_channels, lmax=self.max_lmax
+        )
 
     def forward(self, input_embedding):
-        gating_scalars = None
-        if self.use_grid_mlp:
-            if self.use_sep_s2_act:
-                gating_scalars = self.scalar_mlp(input_embedding.embedding.narrow(1, 0, 1))
-        else:
-            if self.gating_linear is not None:
-                gating_scalars = self.gating_linear(input_embedding.embedding.narrow(1, 0, 1))
+        # ── linear 1: expand channels ──────────────────────────────────────
+        x   = self.so3_linear_1(input_embedding)
+        emb = x.embedding        # [N, (lmax+1)^2, hidden_C]
 
-        input_embedding = self.so3_linear_1(input_embedding)
+        # ── split into per-degree blocks ───────────────────────────────────
+        feat_by_l = torch.split(emb, self.degree_sizes, dim=1)
+        # feat_by_l[0]: [N, 1,     hidden_C]   l=0 scalar
+        # feat_by_l[1]: [N, 3,     hidden_C]   l=1
+        # feat_by_l[2]: [N, 5,     hidden_C]   l=2  ... etc.
 
-        if self.use_grid_mlp:
-            input_embedding_grid = input_embedding.to_grid(self.SO3_grid, lmax=self.max_lmax)
-            input_embedding_grid = self.grid_mlp(input_embedding_grid)
-            input_embedding._from_grid(input_embedding_grid, self.SO3_grid, lmax=self.max_lmax)
-            if self.use_sep_s2_act:
-                input_embedding.embedding = torch.cat(
-                    (gating_scalars, input_embedding.embedding.narrow(1, 1, input_embedding.embedding.shape[1] - 1)),
-                    dim=1,
-                )
-        else:
-            if self.use_gate_act:
-                input_embedding.embedding = self.gate_act(gating_scalars, input_embedding.embedding)
-            else:
-                if self.use_sep_s2_act:
-                    input_embedding.embedding = self.s2_act(gating_scalars, input_embedding.embedding, self.SO3_grid)
-                else:
-                    input_embedding.embedding = self.s2_act(input_embedding.embedding, self.SO3_grid)
+        # ── l=0: ScaledSiLU directly ───────────────────────────────────────
+        out_scalar = self.scalar_act(feat_by_l[0])    # [N, 1, hidden_C]
 
-        input_embedding = self.so3_linear_2(input_embedding)
-        return input_embedding
+        # gate input: the activated scalar features, shape [N, hidden_C]
+        scalar_summary = out_scalar.squeeze(1)         # [N, hidden_C]
+
+        # ── l>0: multiply by invariant scalar gate ─────────────────────────
+        out_higher = []
+        for l_idx in range(self.max_lmax):             # l = 1 .. lmax
+            feat_l = feat_by_l[l_idx + 1]              # [N, 2l+1, hidden_C]
+            # sigmoid(linear(scalar)) → invariant gate [N, hidden_C]
+            # same gate value for every m within this l → equivariant ✓
+            gate_l = torch.sigmoid(
+                self.gate_projs[l_idx](scalar_summary)
+            )                                          # [N, hidden_C]
+            out_higher.append(feat_l * gate_l.unsqueeze(1))
+
+        # ── reassemble and linear 2 ────────────────────────────────────────
+        x.embedding = torch.cat([out_scalar] + out_higher, dim=1)
+        return self.so3_linear_2(x)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

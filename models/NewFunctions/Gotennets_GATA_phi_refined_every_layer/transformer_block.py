@@ -76,6 +76,7 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
         max_num_elements,
         edge_channels_list,
         edge_channels,           # ← NEW: width of t_ij (needed for GATAValueActivation)
+        num_rbf,
         use_atom_edge_embedding=True,
         use_m_share_rad=False,
         activation='scaled_silu',
@@ -107,6 +108,7 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
         self.edge_channels_list     = copy.deepcopy(edge_channels_list)
         self.use_atom_edge_embedding = use_atom_edge_embedding
         self.use_m_share_rad        = use_m_share_rad
+        self.num_rbf                = num_rbf
 
         if self.use_atom_edge_embedding:
             self.source_embedding = nn.Embedding(self.max_num_elements, self.edge_channels_list[-1])
@@ -201,6 +203,7 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
                     edge_channels=self.edge_channels,
                     lmax=self.lmax,
                     mmax=max(self.mmax_list),
+                    num_rbf=self.num_rbf,   # ← ADD
                 )
             else:
                 self.value_act = S2Activation(
@@ -235,6 +238,7 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
         edge_index,
         t_ij,     # [E, edge_channels]   scalar edge features, HTR-refined before call
         rl_ij,    # [E, (L+1)^2 - 1]    edge spherical harmonics, original frame
+        phi_r,
     ):
         # ── edge scalar features ──────────────────────────────────────────────
         if self.use_atom_edge_embedding:
@@ -313,6 +317,7 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
             attn_output = x_0_extra[:, alpha_size:]             # [E, S*C]
 
             # ── compute alpha for normalization ───────────────────────────────
+            # this is the a_ij formula in the thesis ( under GATA enhanced equiformerv2)
             x_0_alpha_r = x_0_alpha.reshape(-1, self.num_heads, self.attn_alpha_channels)
             x_0_alpha_r = self.alpha_norm(x_0_alpha_r)
             x_0_alpha_r = self.alpha_act(x_0_alpha_r)
@@ -329,6 +334,7 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
                 h_j=h_j,                  # neighbour scalar features
                 X_j=X_j,                  # neighbour steerable features (original frame)
                 rl_ij=rl_ij,             # edge spherical harmonics (original frame)
+                phi_r=phi_r, 
             )
 
         else:
@@ -500,6 +506,7 @@ class TransBlockV2(torch.nn.Module):
         max_num_elements,
         edge_channels_list,
         edge_channels,           # ← NEW: width of t_ij
+        num_rbf: int,   # ← ADD
         use_atom_edge_embedding=True,
         use_m_share_rad=False,
         attn_activation='silu',
@@ -513,6 +520,9 @@ class TransBlockV2(torch.nn.Module):
         alpha_drop=0.0,
         drop_path_rate=0.0,
         proj_drop=0.0,
+        
+
+        
     ):
         super(TransBlockV2, self).__init__()
 
@@ -546,6 +556,7 @@ class TransBlockV2(torch.nn.Module):
             edge_channels_list=edge_channels_list,
             edge_channels=edge_channels,
             use_atom_edge_embedding=use_atom_edge_embedding,
+            num_rbf=num_rbf,               # ← ADD THIS LINE
             use_m_share_rad=use_m_share_rad,
             activation=attn_activation,
             use_s2_act_attn=use_s2_act_attn,
@@ -587,6 +598,7 @@ class TransBlockV2(torch.nn.Module):
         batch,
         t_ij,    # [E, edge_channels]   scalar edge features (updated in place each block)
         rl_ij,   # [E, (L+1)^2 - 1]    edge spherical harmonics, original frame
+        phi_r,
     ):
         output_embedding = x
 
@@ -619,6 +631,7 @@ class TransBlockV2(torch.nn.Module):
             edge_index,
             t_ij=t_ij,
             rl_ij=rl_ij,
+            phi_r=phi_r,
         )
 
         if self.drop_path is not None:
@@ -659,9 +672,3 @@ class TransBlockV2(torch.nn.Module):
         # return both updated node features and updated t_ij
         # t_ij must be passed to the next block so it carries forward
         return output_embedding, t_ij
-    
-    
-    
-    
-    
-    

@@ -172,7 +172,7 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
             self.alpha_act  = None
             self.alpha_dot  = None
         else:
-            if self.use_attn_renorm:
+            if self.use_attn_renorm: # This is what happens 
                 self.alpha_norm = torch.nn.LayerNorm(self.attn_alpha_channels)
             else:
                 self.alpha_norm = torch.nn.Identity()
@@ -336,7 +336,7 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
             x_message.embedding = self.value_act(x_message.embedding, self.SO3_grid)
 
         # ── second SO(2) convolution ──────────────────────────────────────────
-        x_message = self.so2_conv_2(x_message, x_edge)
+        x_message = self.so2_conv_2(x_message, x_edge) # x_Edge not used. 
 
         # ── attention weights ─────────────────────────────────────────────────
         if not self.use_sep_s2_act:
@@ -359,6 +359,7 @@ class SO2EquivariantGraphAttention(torch.nn.Module):
         x_message.embedding = attn
 
         x_message._rotate_inv(self.SO3_rotation, self.mappingReduced)
+        # Here we aggregate over all neighbours
         x_message._reduce_edge(edge_index[1], len(x.embedding))
 
         out_embedding = self.proj(x_message)
@@ -582,12 +583,13 @@ class TransBlockV2(torch.nn.Module):
         self,
         x,
         atomic_numbers,
-        edge_distance,
+        edge_distance, # the gaussian rbf expansion of edge distances 
         edge_index,
         batch,
         t_ij,    # [E, edge_channels]   scalar edge features (updated in place each block)
         rl_ij,   # [E, (L+1)^2 - 1]    edge spherical harmonics, original frame
     ):
+        
         output_embedding = x
 
         # ── step 1: extract X_i and X_j for HTR ──────────────────────────────
@@ -626,7 +628,7 @@ class TransBlockV2(torch.nn.Module):
         if self.proj_drop is not None:
             output_embedding.embedding = self.proj_drop(output_embedding.embedding, batch)
 
-        output_embedding.embedding = output_embedding.embedding + x_res
+        output_embedding.embedding = output_embedding.embedding + x_res # added GATA output to the original embedding. 
 
         # ── step 4: norm + FFN ────────────────────────────────────────────────
         x_res = output_embedding.embedding

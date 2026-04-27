@@ -299,6 +299,7 @@ class GATAValueActivation(nn.Module):
         edge_channels:   int,
         lmax:            int,
         mmax:            int,
+        num_rbf:         int,  
     ):
         super().__init__()
         self.lmax            = lmax
@@ -310,6 +311,7 @@ class GATAValueActivation(nn.Module):
         # W_rs: expands t_ij [E, edge_C] → [E, S*hidden_C]
         # This is the W_rs matrix in your paper's Eq. 6
         self.W_rs = nn.Linear(edge_channels, self.S * hidden_channels)
+        self.phi_proj = nn.Linear(num_rbf, self.S * hidden_channels, bias=False)
 
         # gamma_s: expands h_j (neighbour scalar features) [E, sphere_C] → [E, S*hidden_C]
         # This is gamma_s in your paper's Eq. 6
@@ -335,6 +337,7 @@ class GATAValueActivation(nn.Module):
         h_j:         torch.Tensor,  # [E, sphere_C]     l=0 features of neighbour node
         X_j:         torch.Tensor,  # [E, (L+1)^2-1, sphere_C]  neighbour steerable (l>=1)
         rl_ij:       torch.Tensor,  # [E, (L+1)^2-1]    edge SH coefficients (l>=1)
+        phi_r:       torch.Tensor,  
     ) -> torch.Tensor:              # [E, num_reduced_coeffs, hidden_C]
 
         C = self.hidden_channels
@@ -346,7 +349,7 @@ class GATAValueActivation(nn.Module):
         # Their element-wise product means: "edge context gates neighbour identity"
         #Expands the edge scalar features into gate space. Asks: "what does the bond geometry/distance/chemistry say about each gate?"
         # remember h_j is the l = 0 part of the edge node... so we can apply nonlinearities 
-        t_ij_bias = self.W_rs(t_ij) * self.gamma_s(h_j)       # [E, S*C]
+        t_ij_bias = self.W_rs(t_ij) * self.gamma_s(h_j) * self.phi_proj(phi_r)    # [E, S*C]
 
         # ── Eq. 6: combine sea_ij with geometric bias ─────────────────────────
         # and attnd_ouput is from from so2_conv_1. 
@@ -388,7 +391,6 @@ class GATAValueActivation(nn.Module):
         for l_idx in range(self.lmax):
             m_width = self.reduced_degree_sizes[l_idx]         # mmax-clipped width.. to make sure it works with equiformerV2s mmax
             # And then only keep part of neighbours spherical embedding l up to mmax.. same with edge embedding. 
-            
             Xj_l = X_j_by_l[l_idx][:, :m_width, :]            # [E, m_width, C]
             rl_l = rl_ij_by_l[l_idx][:, :m_width].unsqueeze(-1) # [E, m_width, 1]
 
