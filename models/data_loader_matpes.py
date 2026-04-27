@@ -1,23 +1,26 @@
 """
-MatPES-PBE Data Loader
+MatPES-PBE Data Loader - the reproducible official-split version
 =======================
-Supports MatPES 2025.1 JSON.gz format.
+Supports MatPES 2025.1 JSON.gz format with the **official reproducible split**
+from the MatPES paper (391240 train / 21735 val / 21737 test).
+
+Requires the two files published by the MatPES team:
+  - MatPES-PBE-2025.1.json.gz   (main dataset)
+  - MatPES-PBE-split.json.gz    (official train/valid/test indices)
 
 2025.1 field names:
   energy        [eV]        total DFT energy  → divided by nsites → eV/atom (target)
   forces        [eV/Å]      per-atom forces   (list of [fx, fy, fz]) (target)
-  stress        [kBar]      Voigt-6 list      → converted to eV/Å³ ( target)
+  stress        [kBar]      Voigt-6 list      → converted to eV/Å³  (target)
   structure     dict        pymatgen Structure
   nsites        int         number of atoms
-  bader_magmoms list|None   per-atom magnetic moments ( target)
+  bader_magmoms list|None   per-atom magnetic moments (target)
 
 Requirements:
-    pip install pymatgen torch numpy
+    pip install pymatgen monty torch numpy
 """
 
 import os
-import gzip
-import json
 import math
 import pickle
 import warnings
@@ -31,6 +34,11 @@ try:
     from pymatgen.core import Structure
 except ImportError:
     raise ImportError("pip install pymatgen")
+
+try:
+    from monty.serialization import loadfn
+except ImportError:
+    raise ImportError("pip install monty")
 
 # kBar → eV/Å³
 KBAR_TO_EV_ANG3 = 1.0 / 1602.1766
@@ -68,57 +76,87 @@ def parse_stress(stress_raw) -> torch.Tensor:
 
 
 # ════════════════════════════════════════════════════════════════
-# JSON loader  (handles 2025.1 field names)
+# Normalise a single raw entry → canonical schema
 # ════════════════════════════════════════════════════════════════
 
-def load_matpes_json(data_path: str) -> list:
+def _normalise_entry(e: dict) -> Optional[dict]:
     """
-    Load MatPES JSON.gz and normalise to canonical schema.
-
-    2025.1 stores:
-      - 'energy'  (total eV)  +  'nsites' -> we compute energy_per_atom
-      - 'forces'  (not 'force')
-      - 'stress'  Voigt-6 kBar
-      - 'bader_magmoms' (not 'magmom')
+    Convert a raw MatPES 2025.1 entry to the canonical internal schema.
+    Returns None if mandatory fields are missing.
     """
-    print(f"Loading MatPES JSON from: {data_path}")
-    opener = gzip.open if data_path.endswith('.gz') else open
+    # energy per atom
+    epa = e.get('energy_per_atom')
+    if epa is None:
+        energy = e.get('energy')
+        nsites = e.get('nsites') or len(e.get('forces') or e.get('force') or [])
+        if energy is not None and nsites:
+            epa = energy / nsites
 
-    with opener(data_path, 'rt', encoding='utf-8') as f:
-        raw = json.load(f)
+    forces    = e.get('forces') or e.get('force')
+    structure = e.get('structure')
 
-    entries  = list(raw.values()) if isinstance(raw, dict) else raw
-    n_before = len(entries)
+    if epa is None or forces is None or structure is None:
+        return None
 
-    normalised = []
-    for e in entries:
-        # energy per atom
-        epa = e.get('energy_per_atom')          # explicit field (older format)
-        if epa is None:
-            energy = e.get('energy')            # 2025.1: total energy
-            nsites = e.get('nsites') or len(e.get('forces') or e.get('force') or [])
-            if energy is not None and nsites:
-                epa = energy / nsites
+    return {
+        'structure':       structure,
+        'energy_per_atom': float(epa),
+        'force':           forces,
+        'stress':          e.get('stress'),
+        'magmom':          e.get('bader_magmoms') or e.get('magmom'),
+    }
 
-        # forces: 2025.1 uses 'forces', older versions used 'force'
-        forces = e.get('forces') or e.get('force')
 
-        # structure must be present
-        structure = e.get('structure')
+# ════════════════════════════════════════════════════════════════
+# Official-split loader
+# ════════════════════════════════════════════════════════════════
 
-        if epa is None or forces is None or structure is None:
+   
+def load_matpes_official_split(
+    data_path:  str,
+    split_path: str,
+) -> Tuple[list, list, list]:
+    """
+    Load MatPES JSON.gz and split using the official index file.
+
+    Args:
+        data_path:  Path to MatPES-PBE-2025.1.json.gz
+        split_path: Path to MatPES-PBE-split.json.gz
+
+    Returns:
+        (train_entries, val_entries, test_entries) — lists of normalised dicts
+    """
+    print(f"Loading MatPES data from:   {data_path}")
+    raw = loadfn(data_path)
+    entries = list(raw) if isinstance(raw, list) else list(raw.values())
+    print(f"  {len(entries):,} raw entries loaded")
+
+    print(f"Loading split indices from: {split_path}")
+    splits    = loadfn(split_path)
+    train_idx = set(splits["train"])
+    valid_idx = set(splits["valid"])
+    # anything not in train or valid → test
+
+    train_entries, val_entries, test_entries = [], [], []
+    n_dropped = 0
+
+    for i, e in enumerate(entries):
+        normed = _normalise_entry(e)
+        if normed is None:
+            n_dropped += 1
             continue
+        if i in train_idx:
+            train_entries.append(normed)
+        elif i in valid_idx:
+            val_entries.append(normed)
+        else:
+            test_entries.append(normed)
 
-        normalised.append({
-            'structure':       structure,
-            'energy_per_atom': float(epa),
-            'force':           forces,                                   # stored as 'force' internally
-            'stress':          e.get('stress'),                          # Voigt-6 kBar or None
-            'magmom':          e.get('bader_magmoms') or e.get('magmom'),
-        })
+    print(f"  Dropped {n_dropped:,} invalid entries")
+    print(f"  Split → train={len(train_entries):,}  "
+          f"val={len(val_entries):,}  test={len(test_entries):,}")
 
-    print(f"  {len(normalised):,} valid entries  (dropped {n_before - len(normalised):,})")
-    return normalised
+    return train_entries, val_entries, test_entries
 
 
 # ════════════════════════════════════════════════════════════════
@@ -130,11 +168,11 @@ class MatPESDataset(Dataset):
     MatPES PyTorch Dataset.
 
     Args:
-        entries          : list of normalised entry dicts from load_matpes_json()
+        entries          : list of normalised entry dicts
         normalize_energy : z-score energy_per_atom
-        energy_mean/std  : normalization constants (pass train stats to val/test)
+        energy_mean/std  : normalisation constants (pass train stats to val/test)
         normalize_stress : z-score stress (usually False)
-        stress_mean/std  : per-component [6] normalization constants
+        stress_mean/std  : per-component [6] normalisation constants
         max_samples      : optional cap on number of entries
         cache_path       : path to pickle cache of parsed Structure tensors
         regress_stress   : include stress tensor in batch
@@ -144,16 +182,16 @@ class MatPESDataset(Dataset):
     def __init__(
         self,
         entries:          list,
-        normalize_energy: bool            = True,
-        energy_mean:      Optional[float] = None,
-        energy_std:       Optional[float] = None,
-        normalize_stress: bool            = False,
+        normalize_energy: bool                 = True,
+        energy_mean:      Optional[float]      = None,
+        energy_std:       Optional[float]      = None,
+        normalize_stress: bool                 = False,
         stress_mean:      Optional[np.ndarray] = None,
         stress_std:       Optional[np.ndarray] = None,
-        max_samples:      Optional[int]   = None,
-        cache_path:       Optional[str]   = None,
-        regress_stress:   bool            = True,
-        regress_magmom:   bool            = False,
+        max_samples:      Optional[int]        = None,
+        cache_path:       Optional[str]        = None,
+        regress_stress:   bool                 = True,
+        regress_magmom:   bool                 = False,
     ):
         self.regress_stress   = regress_stress
         self.regress_magmom   = regress_magmom
@@ -170,7 +208,8 @@ class MatPESDataset(Dataset):
         self.n       = len(entries)
 
         # Structure cache
-        self._cache = None
+        self._cache          = None
+        self._cache_save_path = None
         if cache_path is not None:
             if os.path.exists(cache_path):
                 print(f"  Loading cache: {cache_path}")
@@ -178,8 +217,8 @@ class MatPESDataset(Dataset):
                     self._cache = pickle.load(f)
                 print(f"  Cache: {len(self._cache):,} entries")
             else:
-                print(f"  Cache not found -- will parse on-the-fly -> {cache_path}")
-                self._cache = {}
+                print(f"  Cache not found — will build on-the-fly → {cache_path}")
+                self._cache           = {}
                 self._cache_save_path = cache_path
 
     def compute_energy_stats(self) -> Tuple[float, float]:
@@ -215,7 +254,7 @@ class MatPESDataset(Dataset):
         if self.normalize_energy:
             energy = (energy - self.energy_mean) / self.energy_std
 
-        # Forces [N, 3] eV/Å -- NOT normalised
+        # Forces [N, 3] eV/Å  — NOT normalised
         forces = torch.tensor(entry['force'], dtype=torch.float32)
 
         # Stress [6] eV/Å³
@@ -255,7 +294,7 @@ def collate_matpes(batch):
     energy         = torch.cat([b['energy']         for b in batch])
     natoms         = torch.tensor([b['natoms'] for b in batch], dtype=torch.long)
     batch_tensor   = torch.cat([b['batch'] + i for i, b in enumerate(batch)])
-    cell           = torch.stack([b['cell'] for b in batch])            # [B, 3, 3]
+    cell           = torch.stack([b['cell'] for b in batch])           # [B, 3, 3]
     pbc            = torch.tensor([[True, True, True]] * len(batch), dtype=torch.bool)
 
     out = {
@@ -269,18 +308,19 @@ def collate_matpes(batch):
         'pbc':            pbc,              # [B, 3]
     }
     if 'stress' in batch[0]:
-        out['stress'] = torch.stack([b['stress'] for b in batch])       # [B, 6]
+        out['stress'] = torch.stack([b['stress'] for b in batch])      # [B, 6]
     if 'magmom' in batch[0]:
-        out['magmom'] = torch.cat([b['magmom'] for b in batch])         # [total_atoms]
+        out['magmom'] = torch.cat([b['magmom'] for b in batch])        # [total_atoms]
     return out
 
 
 # ════════════════════════════════════════════════════════════════
-# Loader factory
+# Loader factory  (reproducible official split)
 # ════════════════════════════════════════════════════════════════
 
 def get_matpes_loaders(
-    data_path:        str,
+    data_path:        str = '/work3/s203788/Master_Project_2026/EquivariantTransformerMPNN4QuantumComputations/datasets/MatPES/MatPES-PBE-2025.1.json.gz',
+    split_path:       str = '/work3/s203788/Master_Project_2026/EquivariantTransformerMPNN4QuantumComputations/datasets/MatPES/MatPES-PBE-split.json.gz',
     batch_size:       int           = 16,
     num_workers:      int           = 4,
     train_frac:       float         = 0.90,
@@ -294,22 +334,26 @@ def get_matpes_loaders(
     regress_stress:   bool          = True,
     regress_magmom:   bool          = False,
     random_seed:      int           = 42,
+    
+
+
+    
+    
 ) -> Tuple[DataLoader, DataLoader, DataLoader]:
-    """Create train / val / test DataLoaders for MatPES."""
+    """
+    Create train / val / test DataLoaders using the official MatPES split.
 
-    all_entries = load_matpes_json(data_path)
+    Args:
+        data_path:  Path to MatPES-PBE-2025.1.json.gz
+        split_path: Path to MatPES-PBE-split.json.gz
+        ...
 
-    rng     = np.random.default_rng(random_seed)
-    idx     = rng.permutation(len(all_entries)).tolist()
-    n       = len(idx)
-    n_train = int(train_frac * n)
-    n_val   = int(val_frac   * n)
-
-    train_entries = [all_entries[i] for i in idx[:n_train]]
-    val_entries   = [all_entries[i] for i in idx[n_train : n_train + n_val]]
-    test_entries  = [all_entries[i] for i in idx[n_train + n_val :]]
-
-    print(f"\nSplit  train={len(train_entries):,}  val={len(val_entries):,}  test={len(test_entries):,}")
+    Returns:
+        (train_loader, val_loader, test_loader)
+    """
+    train_entries, val_entries, test_entries = load_matpes_official_split(
+        data_path, split_path
+    )
 
     def _cache_path(split):
         if cache_dir is None:
@@ -317,24 +361,27 @@ def get_matpes_loaders(
         os.makedirs(cache_dir, exist_ok=True)
         return os.path.join(cache_dir, f'{split}_cache.pkl')
 
-    # Train (compute stats before normalising)
+    # Build train dataset first so we can compute normalisation stats
     print("\n-- TRAIN --")
     train_ds = MatPESDataset(
-        train_entries, normalize_energy=False,
-        max_samples=max_train, cache_path=_cache_path('train'),
-        regress_stress=regress_stress, regress_magmom=regress_magmom,
+        train_entries,
+        normalize_energy=False,         # stats not known yet
+        max_samples=max_train,
+        cache_path=_cache_path('train'),
+        regress_stress=regress_stress,
+        regress_magmom=regress_magmom,
     )
 
-    print("  Computing energy statistics...")
+    print("  Computing energy statistics from training set...")
     energy_mean, energy_std = train_ds.compute_energy_stats()
     print(f"  Energy  mean={energy_mean:.6f}  std={energy_std:.6f}  eV/atom")
 
     stress_mean, stress_std = np.zeros(6), np.ones(6)
     if normalize_stress and regress_stress:
-        print("  Computing stress statistics...")
+        print("  Computing stress statistics from training set...")
         stress_mean, stress_std = train_ds.compute_stress_stats()
 
-    # Apply stats to train
+    # Apply stats now that we have them
     train_ds.normalize_energy = normalize_energy
     train_ds.energy_mean      = energy_mean
     train_ds.energy_std       = energy_std
@@ -345,19 +392,27 @@ def get_matpes_loaders(
     print("\n-- VAL --")
     val_ds = MatPESDataset(
         val_entries,
-        normalize_energy=normalize_energy, energy_mean=energy_mean, energy_std=energy_std,
-        normalize_stress=normalize_stress, stress_mean=stress_mean, stress_std=stress_std,
-        max_samples=max_val, cache_path=_cache_path('val'),
-        regress_stress=regress_stress, regress_magmom=regress_magmom,
+        normalize_energy=normalize_energy,
+        energy_mean=energy_mean, energy_std=energy_std,
+        normalize_stress=normalize_stress,
+        stress_mean=stress_mean, stress_std=stress_std,
+        max_samples=max_val,
+        cache_path=_cache_path('val'),
+        regress_stress=regress_stress,
+        regress_magmom=regress_magmom,
     )
 
     print("\n-- TEST --")
     test_ds = MatPESDataset(
         test_entries,
-        normalize_energy=normalize_energy, energy_mean=energy_mean, energy_std=energy_std,
-        normalize_stress=normalize_stress, stress_mean=stress_mean, stress_std=stress_std,
-        max_samples=max_test, cache_path=_cache_path('test'),
-        regress_stress=regress_stress, regress_magmom=regress_magmom,
+        normalize_energy=normalize_energy,
+        energy_mean=energy_mean, energy_std=energy_std,
+        normalize_stress=normalize_stress,
+        stress_mean=stress_mean, stress_std=stress_std,
+        max_samples=max_test,
+        cache_path=_cache_path('test'),
+        regress_stress=regress_stress,
+        regress_magmom=regress_magmom,
     )
 
     kw = dict(
@@ -371,7 +426,7 @@ def get_matpes_loaders(
     val_loader   = DataLoader(val_ds,   batch_size=batch_size, shuffle=False, **kw)
     test_loader  = DataLoader(test_ds,  batch_size=batch_size, shuffle=False, **kw)
 
-    print(f"\nLoaders ready:")
+    print(f"\nLoaders ready  (official MatPES split):")
     print(f"  Train: {len(train_ds):>7,}  ({math.ceil(len(train_ds)/batch_size)} batches)")
     print(f"  Val  : {len(val_ds):>7,}  ({math.ceil(len(val_ds)/batch_size)} batches)")
     print(f"  Test : {len(test_ds):>7,}  ({math.ceil(len(test_ds)/batch_size)} batches)")
@@ -394,14 +449,16 @@ def denormalize_energy(energy_norm, mean, std):
 if __name__ == '__main__':
     import argparse
     parser = argparse.ArgumentParser()
-    parser.add_argument('--data_path',   required=True)
-    parser.add_argument('--batch_size',  type=int, default=4)
-    parser.add_argument('--num_workers', type=int, default=1)
+    parser.add_argument('--data_path', default='/work3/s203788/Master_Project_2026/EquivariantTransformerMPNN4QuantumComputations/datasets/MatPES/MatPES-PBE-2025.1.json.gz',   help='MatPES-PBE-2025.1.json.gz')
+    parser.add_argument('--split_path', default='/work3/s203788/Master_Project_2026/EquivariantTransformerMPNN4QuantumComputations/datasets/MatPES/MatPES-PBE-split.json.gz',   help='MatPES-PBE-split.json.gz')
+    parser.add_argument('--batch_size',  type=int, default=8)
+    parser.add_argument('--num_workers', type=int, default=4)
     parser.add_argument('--max_train',   type=int, default=100)
     args = parser.parse_args()
 
     tl, vl, tel = get_matpes_loaders(
         data_path=args.data_path,
+        split_path=args.split_path,
         batch_size=args.batch_size,
         num_workers=args.num_workers,
         max_train=args.max_train,
